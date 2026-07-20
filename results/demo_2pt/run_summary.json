@@ -1,0 +1,37 @@
+{
+  "scenario": {
+    "length": 1.0,
+    "span": 0.8,
+    "height": 1.0,
+    "num_points": 2,
+    "num_segments": 60,
+    "max_time": 5.0,
+    "settle_vel": 0.002,
+    "min_time": 1.0,
+    "settle_samples": 3,
+    "gravity": 9.81,
+    "seed": 0
+  },
+  "methods": {
+    "newton_cable": {
+      "status": "ok",
+      "wall_s": 143.6,
+      "produced": true
+    },
+    "newton_engine": {
+      "status": "ok",
+      "wall_s": 14.5,
+      "produced": false
+    },
+    "physx_capsule": {
+      "status": "ok",
+      "wall_s": 25.6,
+      "produced": true
+    },
+    "warp_rod": {
+      "status": "ok",
+      "wall_s": 4.4,
+      "produced": true
+    }
+  }
+}

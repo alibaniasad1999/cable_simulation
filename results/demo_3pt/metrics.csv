@@ -1,0 +1,4 @@
+method,family,label,settled,sim_time_s,wall_s,num_nodes,rmse_mm,max_err_mm,sag_mm,sag_ref_mm,sag_err_mm,arc_m,arc_drift_pct
+newton_cable,Newton,Newton cable (add_rod + VBD),False,5.1,137.74,61,1.274,13.436,133.581,132.719,0.863,1.01443,1.443
+physx_capsule,PhysX (pure Isaac Sim),PhysX capsule chain (D6),False,5.1,10.03,61,26.366,52.78,132.401,132.719,-0.317,0.998482,-0.1518
+warp_rod,Reference,Warp XPBD rod,True,1.0,0.6,61,39.492,86.97,130.979,132.719,-1.74,0.993207,-0.6793

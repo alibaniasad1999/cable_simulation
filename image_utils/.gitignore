@@ -1,0 +1,22 @@
+# SAM model weights (large; auto-downloaded on first run into models/)
+models/
+*.pt
+*.pth
+
+# Input media (large photos / videos) -- inputs only live here
+media/
+
+# Workflow results (run_image.sh writes results/<image-name>/...)
+results/
+
+# Stray generated outputs (if a tool is run directly, not via the workflow)
+*_cable_mask.png
+*_cable_overlay.png
+*_profile.png
+*_result.mp4
+*_result.gif
+*.csv
+
+# Python cache
+__pycache__/
+*.pyc
