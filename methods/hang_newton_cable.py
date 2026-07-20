@@ -49,6 +49,27 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# ---------------------------------------------------------------------------
+# Optional Isaac Sim viewport.
+#
+# This method's physics is Newton, NOT Isaac Sim's engine -- Isaac Sim 6 cannot
+# represent a both-ends-fixed cable through USD (see hang_newton_engine.py). The
+# viewport is therefore render-only: Newton solves, Isaac Sim draws. That is how
+# "Newton in the Isaac Sim GUI" is achieved here, and because the prims carry no
+# physics, enabling it cannot change a benchmark number.
+#
+# SimulationApp must be constructed before any pxr/omni import AND before Warp,
+# so that in GUI mode Warp comes from Isaac's bundle and shares its CUDA
+# context. That has to happen before argparse runs, hence the raw argv peek --
+# --gui itself is declared properly in method_parser().
+# ---------------------------------------------------------------------------
+_GUI = "--gui" in sys.argv
+SIMULATION_APP = None
+if _GUI:
+    from isaacsim.simulation_app import SimulationApp
+
+    SIMULATION_APP = SimulationApp({"headless": False})
+
 import numpy as np
 
 import isaac_env
@@ -59,6 +80,7 @@ import warp as wp  # noqa: E402  (must follow bootstrap)
 import newton  # noqa: E402
 
 from cable_config import CABLE, with_length, rod_stiffness  # noqa: E402
+from cable_view import CableView  # noqa: E402
 from hang_common import (  # noqa: E402
     SettleMonitor,
     initial_polyline,
@@ -221,6 +243,10 @@ def main() -> int:
                         "the cable pivot -- matches the other methods' boundary "
                         "condition, so use it for an equal-terms comparison")
     p.add_argument("--device", default=None, help="warp device, e.g. cuda:0 or cpu")
+    p.add_argument("--view-style", choices=["tube", "capsules"], default="tube",
+                   help="--gui rendering: 'tube' draws one continuous cable (how "
+                        "Newton's own viewer shows it); 'capsules' draws each rod "
+                        "segment separately, which makes the discretisation visible")
     args = p.parse_args()
 
     scenario = scenario_from_args(args)
@@ -254,12 +280,25 @@ def main() -> int:
             solver.step(state_0, state_1, control, contacts, sim_dt)
             state_0, state_1 = state_1, state_0
 
+    # Render-only mirror of the cable in the Isaac Sim stage (no-op without --gui).
+    view = CableView(
+        SIMULATION_APP,
+        len(bodies) + 1,
+        cable.radius,
+        label="cable_newton",
+        supports=scenario.supports,
+        style=args.view_style,
+    )
+
     sim_time = 0.0
     monitor.update(0.0, read_nodes(state_0, bodies, half_len))
+    view.sync(read_nodes(state_0, bodies, half_len))
     while sim_time < scenario.max_time:
         for _ in range(int(round(fps * 0.1))):  # sample every 0.1 s
             simulate_frame()
             sim_time += frame_dt
+            if view.enabled:  # animate every frame, not every sample
+                view.sync(read_nodes(state_0, bodies, half_len))
         nodes = read_nodes(state_0, bodies, half_len)
         settled = monitor.update(sim_time, nodes)
         print(monitor.report(sim_time, nodes))
@@ -270,6 +309,13 @@ def main() -> int:
     nodes = monitor.equilibrium_nodes(args.average_window)
     info["average_window_s"] = args.average_window
     write_outputs(args.out, scenario, monitor, nodes, METHOD, LABEL, extra=info)
+
+    if view.enabled:
+        # Show the reported equilibrium shape, then wait: without this the window
+        # would vanish the instant the cable settles, which reads as a crash.
+        view.sync(nodes)
+        view.hold_open(nodes, "\n[newton-cable] settled -- close the Isaac Sim window to exit.")
+        SIMULATION_APP.close()
     return 0
 
 

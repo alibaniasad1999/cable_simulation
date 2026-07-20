@@ -1,0 +1,22 @@
+{
+  "cable.length_m": {
+    "source": "measured",
+    "value": 0.8486401011664859,
+    "image": "images/three_point.jpg",
+    "per_span_m": [
+      0.3878131741630122,
+      0.4608269270034737
+    ],
+    "sag_m": [
+      0.16725573960682003,
+      0.19275688751959227
+    ],
+    "scale_mm_per_px": 0.157861552560713
+  },
+  "supports.mid_fraction": {
+    "source": "measured",
+    "value": 0.4569819097989233,
+    "chord_proportional": 0.4285714285714286,
+    "difference_pp": 2.8410481227494677
+  }
+}

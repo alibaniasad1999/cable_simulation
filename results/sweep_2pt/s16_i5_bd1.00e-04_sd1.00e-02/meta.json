@@ -1,0 +1,53 @@
+{
+  "arc_drift_pct": 3.3033802438159565,
+  "arc_length_m": 1.0330338024381596,
+  "arc_length_target_m": 1.0,
+  "final_max_speed_mps": 0.0038753498475117567,
+  "label": "Newton cable (add_rod + VBD)",
+  "lowest_z_m": 0.7095431021230493,
+  "max_abs_error_mm": 25.11615256732147,
+  "method": "newton_cable",
+  "num_nodes": 61,
+  "rmse_mm": 17.43769279379111,
+  "sag_error_mm": 25.019388737127002,
+  "sag_m": 0.2904568978769507,
+  "sag_reference_m": 0.2654375091398237,
+  "scenario": {
+    "gravity": 9.81,
+    "height": 1.0,
+    "length": 1.0,
+    "max_time": 8.0,
+    "min_time": 1.0,
+    "num_points": 2,
+    "num_segments": 60,
+    "seed": 0,
+    "settle_samples": 3,
+    "settle_vel": 0.002,
+    "span": 0.8
+  },
+  "settled": false,
+  "settled_time_s": null,
+  "sim_time_s": 8.099999999999982,
+  "solver": {
+    "average_window_s": 0.5,
+    "bend_damping": 0.0001,
+    "bend_stiffness_N_m": 0.060321551837809864,
+    "clamped_bodies": [
+      0,
+      59
+    ],
+    "density_kg_m3": 2390.0,
+    "device": "cuda:0",
+    "mid_support": "clamp",
+    "newton_version": "1.2.0",
+    "num_bodies": 60,
+    "num_joints": 59,
+    "segment_length_m": 0.016665845266245302,
+    "stretch_damping": 0.01,
+    "stretch_stiffness_N_per_m": 60321.551837809835,
+    "substeps": 16,
+    "vbd_iterations": 5,
+    "warp_version": "1.13.0"
+  },
+  "wall_time_s": 10.933
+}

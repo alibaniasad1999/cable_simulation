@@ -1,0 +1,17 @@
+{
+  "scenario": {
+    "length": 1.0,
+    "span": 0.8,
+    "height": 1.0,
+    "num_points": 3,
+    "num_segments": 60,
+    "max_time": 8.0,
+    "settle_vel": 0.002,
+    "min_time": 1.0,
+    "settle_samples": 3,
+    "gravity": 9.81,
+    "seed": 0,
+    "mid_x": 0.25
+  },
+  "methods": {}
+}

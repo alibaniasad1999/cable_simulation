@@ -1,0 +1,14 @@
+{
+  "gravity": 9.81,
+  "height": 1.0,
+  "length": 0.8931888802527346,
+  "max_time": 8.0,
+  "mid_x": 0.15,
+  "min_time": 1.0,
+  "num_points": 3,
+  "num_segments": 60,
+  "seed": 0,
+  "settle_samples": 3,
+  "settle_vel": 0.002,
+  "span": 0.35
+}

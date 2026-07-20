@@ -1,0 +1,98 @@
+# =============================================================================
+# Apple charger cable, clamped at three points on a door.
+#
+# Copy this file to describe a different cable or rig; nothing in the code needs
+# to change. Run it with:
+#
+#     python3 run_experiment.py --config experiments/apple_cable_3pt.yaml
+#
+# A field left as `null` is MEASURED FROM THE PHOTOGRAPH. That is deliberate --
+# see the notes on cable.length_m and supports.mid_fraction below.
+# =============================================================================
+
+name: apple_cable_3pt
+description: >
+  1 m Apple charger cable taped to a door at three level points, 0 / 15 / 35 cm
+  from the left clamp. Photographed square-on. The tape clamps the cable's
+  ANGLE as well as its position, so the ends leave vertically rather than at
+  the catenary's natural exit angle -- expect a systematic deviation from the
+  ideal pinned catenary near each clamp.
+
+cable:
+  # Cross-section and material. These describe a TPU jacket and are the values
+  # the benchmark has always used; they are NOT measured from this cable, so
+  # treat any conclusion that depends strongly on them with suspicion. The
+  # hanging shape barely depends on them (the catenary is the EI -> 0 limit),
+  # which is precisely why the shape cannot be used to infer them.
+  radius_m: 0.002
+  youngs_modulus_pa: 80.0e6
+  poisson_ratio: 0.45
+  density_kg_m3: 2390.0
+
+  # null -> measured from the photograph. RECOMMENDED.
+  # The free length between two clamps is not the length on the packaging, and
+  # length is the most influential single input to every simulation here.
+  # Measuring it from the same photograph the simulation is scored against
+  # removes an entire class of silent mismatch. Set a number to override.
+  length_m: null
+
+supports:
+  # Clamp positions in metres from the leftmost clamp, left to right.
+  # Measured with a tape: 0, 15 cm, 35 cm.
+  x_m: [0.0, 0.15, 0.35]
+
+  # All clamps at one height. Only the differences matter for the shape; the
+  # absolute value just sets where the cable sits in the simulation's world.
+  height_m: 1.0
+
+  # null -> measured from the photograph. RECOMMENDED.
+  # Fraction of the cable's ARC LENGTH lying left of the middle clamp. This is
+  # a fact about where the clamp grips, which statics does not determine and no
+  # tape measure gives you. Measured here it is ~0.457; the chord-proportional
+  # convention the solvers otherwise assume would give 0.429. Assuming it means
+  # simulating a different experiment from the one photographed.
+  mid_fraction: null
+
+image:
+  path: images/three_point.jpg
+
+  # HSV thresholds separating a bright, nearly-grey cable from a saturated
+  # brown door. Raise sat_max if the cable is being missed; lower val_min if it
+  # is dim. Always check the detection figure after changing these.
+  sat_max: 70
+  val_min: 150
+
+  # Curve tracer. step_px is how far it advances along the cable each
+  # iteration; halfwidth_px is the half-length of its perpendicular probe, which
+  # must exceed the cable's half-thickness but stay below the gap to any
+  # neighbouring part of the cable.
+  step_px: 4.0
+  halfwidth_px: 40.0
+
+simulation:
+  # Solvers to run. newton_cable is Newton's own add_rod + VBD and is the
+  # reference method; physx_capsule is the rigid-chain comparison.
+  # newton_engine is deliberately absent: Isaac Sim 6 cannot represent a
+  # cable fixed at both ends through USD (an articulation must be a tree, and
+  # a doubly-clamped cable is a loop).
+  methods: [newton_cable, physx_capsule, warp_rod]
+
+  segments: 60
+  max_time: 8.0
+  settle_vel: 2.0e-3
+
+  # Solver budget and damping, from this repository's own sweep (run_sweep.py).
+  # These beat the previous defaults on accuracy, arc-length drift, settling
+  # AND wall-clock simultaneously. Note stretch_damping = 0: damping the
+  # stretch constraint fights the solver's own length correction, and raising
+  # it to 0.01 cost a factor of six in accuracy at no benefit.
+  substeps: 4
+  iterations: 200
+  stretch_damping: 0.0
+  bend_damping: 1.0e-4
+
+  # 'clamp' holds both capsules at the middle node, matching a taped clamp that
+  # fixes the cable's angle. 'pin' holds one and lets the cable pivot, which is
+  # what the other methods do -- use it when comparing methods on equal terms
+  # rather than reproducing this photograph.
+  mid_support: clamp

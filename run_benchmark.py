@@ -30,6 +30,7 @@ recorded in the metrics table rather than taking down the benchmark.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import subprocess
@@ -39,7 +40,7 @@ from dataclasses import asdict
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "methods"))
 
-from hang_common import Scenario, add_scenario_args  # noqa: E402
+from hang_common import Scenario, add_scenario_args, resolve_supports  # noqa: E402
 import isaac_env  # noqa: E402
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -172,10 +173,22 @@ def main() -> int:
     point_counts = [2, 3] if args.all else [args.num_points]
     out_dirs = []
     for n in point_counts:
+        # Resolve --x1/--x2 per scenario: with --all the same flags describe a
+        # 2-support and a 3-support layout, and --x1 means different things in
+        # each (far support vs middle support).
+        resolved = copy.copy(args)
+        resolved.num_points = n
+        if n == 2 and getattr(args, "x2", None) is not None:
+            # Under --all the same flags describe both layouts. Keeping the OUTER
+            # supports identical (0 and --x2) and merely dropping the middle one
+            # is what makes the two runs comparable: the difference between them
+            # is then the middle support alone, not a different span.
+            resolved.x1, resolved.x2 = args.x2, None
+        span, mid_x = resolve_supports(resolved)
         scenario = Scenario(
-            length=args.length, span=args.span, height=args.height,
+            length=args.length, span=span, height=args.height,
             num_points=n, num_segments=args.num_segments,
-            max_time=args.max_time, settle_vel=args.settle_vel)
+            max_time=args.max_time, settle_vel=args.settle_vel, mid_x=mid_x)
         out_dirs.append(run_scenario(scenario, args, isaac_py))
 
     if args.dry_run or args.no_analysis:

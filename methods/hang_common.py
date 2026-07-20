@@ -65,12 +65,18 @@ class Scenario:
     settle_samples: int = 3    # consecutive quiet samples required to settle
     gravity: float = 9.81      # [m/s^2]
     seed: int = 0
+    # [m] middle support position measured from the LEFT support, 3-point only.
+    # None = the midpoint, span/2, which is what every earlier run used, so an
+    # old run.json without this field still deserialises to its old geometry.
+    mid_x: float | None = None
 
     # -- supports --------------------------------------------------------
     @property
     def support_x(self) -> list[float]:
-        n_spans = self.num_points - 1
-        return [i * self.span / n_spans for i in range(self.num_points)]
+        """Support x positions, left to right, starting at 0."""
+        if self.num_points == 2:
+            return [0.0, self.span]
+        return [0.0, self.mid_x if self.mid_x is not None else 0.5 * self.span, self.span]
 
     @property
     def supports(self) -> np.ndarray:
@@ -78,14 +84,33 @@ class Scenario:
         return np.array([[x, 0.0, self.height] for x in self.support_x])
 
     @property
+    def mid_fraction(self) -> float | None:
+        """Fraction of the cable's ARC LENGTH lying left of the middle support.
+
+        The middle support pins a material point, so this split is a property
+        of the experiment rather than something statics determines. The
+        convention -- here, in ``initial_polyline`` and in ``catenary.solve``
+        -- is chord-proportional, and all three must agree or the analytic
+        reference would describe a different cable from the simulated one.
+        """
+        if self.num_points == 2:
+            return None
+        return self.support_x[1] / self.span
+
+    @property
     def mid_node(self) -> int | None:
         """Node index pinned at the middle support (None in the 2-point case).
 
-        Equal spacing and equal heights make the halves symmetric, so the
-        middle support sits exactly at the midpoint node. ``num_segments`` is
-        forced even by ``__post_init__`` to keep this exact.
+        With the middle support at the midpoint this is num_segments // 2, kept
+        exact by forcing num_segments even. Off-centre, the node is the nearest
+        one to the chord-proportional arc split, and is clamped away from the
+        ends so that both sides keep at least two segments -- a one-segment side
+        cannot bend and would report a spurious kink.
         """
-        return None if self.num_points == 2 else self.num_segments // 2
+        if self.num_points == 2:
+            return None
+        node = int(round(self.mid_fraction * self.num_segments))
+        return min(max(node, 2), self.num_segments - 2)
 
     def __post_init__(self):
         if self.num_points not in (2, 3):
@@ -94,8 +119,15 @@ class Scenario:
             raise ValueError(
                 f"cable length {self.length:.4f} m must exceed the span "
                 f"{self.span:.4f} m, otherwise the cable hangs taut with no sag")
-        if self.num_points == 3 and self.num_segments % 2:
-            self.num_segments += 1  # keep the middle support exactly on a node
+        if self.num_points == 3 and self.mid_x is not None:
+            if not 0.0 < self.mid_x < self.span:
+                raise ValueError(
+                    f"middle support x={self.mid_x:.4f} m must lie strictly between "
+                    f"the outer supports at 0 and {self.span:.4f} m")
+        # Only meaningful for a centred middle support; off-centre the node is
+        # rounded anyway, so forcing parity would buy nothing.
+        if self.num_points == 3 and self.mid_x is None and self.num_segments % 2:
+            self.num_segments += 1
 
     @property
     def tag(self) -> str:
@@ -103,7 +135,8 @@ class Scenario:
 
     def catenary(self) -> catenary.CatenarySolution:
         """The analytic reference shape for this scenario."""
-        return catenary.solve(self.span, self.length, self.height, self.num_points)
+        return catenary.solve(self.span, self.length, self.height,
+                              self.num_points, mid_x=self.mid_x)
 
     # -- serialisation ---------------------------------------------------
     def save(self, path: str) -> None:
@@ -136,6 +169,15 @@ def add_scenario_args(parser) -> None:
                    help="support height [m] (all supports share it)")
     g.add_argument("--points", type=int, default=2, choices=[2, 3], dest="num_points",
                    help="number of support points")
+    # Measured support positions, as they come off a photograph: the leftmost
+    # support is the origin, so only the others need stating. These override
+    # --span, which cannot express an off-centre middle support.
+    g.add_argument("--x1", type=float, default=None,
+                   help="2 supports: x of the far support [m]. "
+                        "3 supports: x of the MIDDLE support [m]. "
+                        "(the left support is always x=0; overrides --span)")
+    g.add_argument("--x2", type=float, default=None,
+                   help="3 supports: x of the far support [m] (overrides --span)")
     g.add_argument("--segments", type=int, default=60, dest="num_segments",
                    help="cable discretisation (nodes = segments + 1)")
     g.add_argument("--max-time", type=float, default=8.0,
@@ -144,19 +186,61 @@ def add_scenario_args(parser) -> None:
                    help="settled when the fastest node drops below this [m/s]")
 
 
+def resolve_supports(args) -> tuple[float, float | None]:
+    """Turn the CLI's support flags into ``(span, mid_x)``.
+
+    ``--x1``/``--x2`` describe supports the way a photograph gives them --
+    leftmost at the origin, the rest measured from it -- while ``--span``
+    describes only the outer separation and forces any middle support to the
+    midpoint. Both are accepted; the explicit positions win.
+
+        2 supports:  --x1 X          -> span = X
+        3 supports:  --x1 M --x2 F   -> span = F, middle at M
+                     --x1 M          -> span from --span, middle at M
+
+    Raises SystemExit with an actionable message on an impossible layout,
+    rather than letting it surface later as a catenary that will not solve.
+    """
+    x1 = getattr(args, "x1", None)
+    x2 = getattr(args, "x2", None)
+    span, mid_x = args.span, None
+
+    if args.num_points == 2:
+        if x2 is not None:
+            raise SystemExit("--x2 needs --points 3 (a 2-support cable has no middle support)")
+        if x1 is not None:
+            span = x1
+    else:
+        if x2 is not None:
+            span = x2
+        if x1 is not None:
+            mid_x = x1
+        if mid_x is not None and not 0.0 < mid_x < span:
+            raise SystemExit(
+                f"--x1 {mid_x} must lie strictly between the outer supports at 0 and {span}. "
+                f"With 3 supports --x1 is the MIDDLE one and --x2 the far one, so --x1 "
+                f"must be the smaller of the two.")
+
+    if span <= 0.0:
+        raise SystemExit(f"support span must be positive, got {span}")
+    return span, mid_x
+
+
 def scenario_from_args(args) -> Scenario:
     """Build a Scenario from ``--scenario file`` if given, else from the flags."""
     path = getattr(args, "scenario", None)
     if path:
         return Scenario.load(path)
+    span, mid_x = resolve_supports(args)
     return Scenario(
         length=args.length,
-        span=args.span,
+        span=span,
         height=args.height,
         num_points=args.num_points,
         num_segments=args.num_segments,
         max_time=args.max_time,
         settle_vel=args.settle_vel,
+        mid_x=mid_x,
     )
 
 

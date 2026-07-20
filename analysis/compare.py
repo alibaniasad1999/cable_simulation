@@ -250,7 +250,27 @@ def write_report(path, run_dir, scenario, results, rows, real_path, figures):
     sol = scenario.catenary()
     cable = with_length(scenario.length)
     l_eg = cable.gravito_bending_length()
-    sub_span = scenario.span / (scenario.num_points - 1)
+    # Shortest sub-span, not the average: bending resistance matters most where
+    # the span is tightest, so with an off-centre middle support the average
+    # would understate how bending-dominated the cable is.
+    sub_span = float(np.min(np.diff(scenario.support_x)))
+
+    # State the actual split. With an off-centre middle support the halves are
+    # NOT S/2 and L/2, and the arc-length share is a convention (chord-
+    # proportional) rather than something statics fixes -- so it must be written
+    # down, not implied by a formula that assumes symmetry.
+    if scenario.num_points == 2:
+        span_description = (r"a single span of $S$ carrying the whole length $L$.")
+    else:
+        widths = np.diff(scenario.support_x)
+        fracs = widths / scenario.span
+        span_description = (
+            "spans of "
+            + " and ".join(f"${w:.3f}$\\,m" for w in widths)
+            + ", carrying "
+            + " and ".join(f"${f * 100:.1f}\\%$" for f in fracs)
+            + " of the cable's length respectively (chord-proportional, the "
+              "convention used by both the solvers and this reference).")
     ratio = l_eg / sub_span
 
     def fmt(v, nd=2):
@@ -349,9 +369,9 @@ For a perfectly flexible, inextensible cable on equal-height supports,
 \end{{equation}}
 with $a = T_0/w$ solved from the length constraint. Because all supports share
 one height, the {scenario.num_points}-support case separates exactly into
-{scenario.num_points - 1} independent sub-catenaries of span
-$S/{scenario.num_points - 1}$ and length $L/{scenario.num_points - 1}$.
-For this scenario $a = {sol.a:.4f}$\,m and the sag is
+{scenario.num_points - 1} independent sub-catenaries meeting at the support(s):
+{span_description}
+For this scenario $a = {sol.describe_a()}$ and the sag is
 ${sol.sag * 1e3:.1f}$\,mm.
 
 \paragraph{{Validity.}} The catenary is the $EI \to 0$ limit. Bending competes
@@ -425,7 +445,7 @@ def main() -> int:
     # -- console table --
     sol = scenario.catenary()
     print(f"\n{scenario.describe()}")
-    print(f"catenary: a={sol.a:.4f} m, sag={sol.sag * 1e3:.1f} mm\n")
+    print(f"catenary: a={sol.describe_a()}, sag={sol.sag * 1e3:.1f} mm\n")
     hdr = f"{'method':16s} {'RMSE':>8s} {'max':>8s} {'sag':>8s} {'sagerr':>8s} {'arc%':>8s} {'wall':>7s}  settled"
     print(hdr)
     print("-" * len(hdr))

@@ -162,9 +162,42 @@ class CatenarySolution:
         return max(s.sag for s in self.spans)
 
     @property
+    def a_values(self) -> list[float]:
+        """Catenary parameter of each span, left to right [m]."""
+        return [s.a for s in self.spans]
+
+    @property
+    def uniform_a(self) -> bool:
+        """Whether every span shares one catenary parameter.
+
+        True for a 2-support cable and for a centred middle support. False once
+        the middle support moves off centre: the two sides then carry different
+        tensions and are genuinely different curves.
+        """
+        values = self.a_values
+        return max(values) - min(values) <= 1.0e-9 * max(values)
+
+    @property
     def a(self) -> float:
-        """Catenary parameter [m] (identical across spans by symmetry)."""
+        """The single catenary parameter [m], when the spans share one.
+
+        Raises ValueError when they do not, rather than silently returning the
+        left span's value: this number is quoted in the generated report, and an
+        off-centre support makes "the" catenary parameter meaningless. Callers
+        that must handle both cases should use :attr:`a_values`.
+        """
+        if not self.uniform_a:
+            raise ValueError(
+                "this cable's spans have different catenary parameters "
+                f"({', '.join(f'{v:.4f}' for v in self.a_values)} m) because the "
+                "middle support is off centre -- use .a_values, not .a")
         return self.spans[0].a
+
+    def describe_a(self) -> str:
+        """``a`` formatted for humans, correct whether or not the spans agree."""
+        if self.uniform_a:
+            return f"{self.spans[0].a:.4f} m"
+        return " / ".join(f"{v:.4f}" for v in self.a_values) + " m (per span)"
 
     def z(self, x: np.ndarray | float) -> np.ndarray:
         """Height at x, piecewise across the spans."""
@@ -197,7 +230,7 @@ class CatenarySolution:
             f"analytic catenary: {self.num_supports} supports at z={self.height:.3f} m, "
             f"span S={self.total_span:.3f} m, length L={self.total_length:.3f} m",
             f"  L/S = {self.total_length / self.total_span:.4f}   "
-            f"a = {self.a:.4f} m   sag = {self.sag * 1e3:.1f} mm   "
+            f"a = {self.describe_a()}   sag = {self.sag * 1e3:.1f} mm   "
             f"lowest z = {self.height - self.sag:.4f} m",
             f"  arc-length self-check: {self.arc_length():.6f} m "
             f"(target {self.total_length:.6f} m)",
@@ -210,32 +243,61 @@ class CatenarySolution:
         return "\n".join(lines)
 
 
-def solve(span: float, length: float, height: float, num_supports: int = 2) -> CatenarySolution:
+def solve(span: float, length: float, height: float, num_supports: int = 2,
+          mid_x: float | None = None) -> CatenarySolution:
     """Analytic shape for a cable on equal-height supports.
 
     Args:
         span: total horizontal distance between the two OUTER supports [m].
         length: total cable length [m].
         height: common height of every support [m].
-        num_supports: 2 (ends only) or 3 (ends plus an evenly-spaced middle).
+        num_supports: 2 (ends only) or 3 (ends plus a middle support).
+        mid_x: position of the middle support [m], measured from the left
+            support. ``None`` places it at the midpoint, ``span / 2``.
+            Ignored when ``num_supports == 2``.
 
     Returns:
-        A :class:`CatenarySolution`. For ``num_supports == 3`` this is two
-        identical sub-catenaries of span S/2 and length L/2 -- exact, because
-        equal support heights make the halves symmetric and independent.
+        A :class:`CatenarySolution`. The middle support PINS a material point
+        of the cable -- it is a joint, not a frictionless ring -- so the two
+        sides are independent catenaries that share only that point. Each is
+        solved separately for its own span and its own share of the length.
+
+    HOW THE LENGTH IS SPLIT
+    -----------------------
+    Pinning a material point makes the arc-length split a free parameter of the
+    experiment, not something the statics determine: the same supports admit
+    many equilibria depending on where along the cable the pinch was applied.
+    The convention here is CHORD-PROPORTIONAL -- each side receives length in
+    proportion to its horizontal span -- which reproduces the symmetric result
+    exactly when ``mid_x == span / 2`` and matches the discretisation the
+    solvers build. Any solver using a different split is answering a different
+    question, so this must be stated rather than assumed.
     """
     if num_supports not in (2, 3):
         raise ValueError(f"num_supports must be 2 or 3, got {num_supports}")
 
-    n_spans = num_supports - 1
-    sub_span = span / n_spans
-    sub_length = length / n_spans
-    a = solve_shape_parameter(sub_span, sub_length)
+    if num_supports == 2:
+        a = solve_shape_parameter(span, length)
+        spans = [CatenarySpan(x0=0.0, span=span, height=height, length=length, a=a)]
+        return CatenarySolution(spans=spans, total_span=span,
+                                total_length=length, height=height)
 
-    spans = [
-        CatenarySpan(x0=i * sub_span, span=sub_span, height=height, length=sub_length, a=a)
-        for i in range(n_spans)
-    ]
+    mid = 0.5 * span if mid_x is None else float(mid_x)
+    if not 0.0 < mid < span:
+        raise ValueError(
+            f"middle support at x={mid:.4f} m must lie strictly between the outer "
+            f"supports at 0 and {span:.4f} m")
+
+    widths = [mid, span - mid]
+    fractions = [w / span for w in widths]
+    x0 = 0.0
+    spans = []
+    for width, frac in zip(widths, fractions):
+        sub_length = length * frac
+        spans.append(CatenarySpan(x0=x0, span=width, height=height,
+                                  length=sub_length,
+                                  a=solve_shape_parameter(width, sub_length)))
+        x0 += width
     return CatenarySolution(spans=spans, total_span=span, total_length=length, height=height)
 
 
