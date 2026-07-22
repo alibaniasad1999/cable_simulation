@@ -62,9 +62,10 @@ $\ell = (EI/w)^{1/3} = 150.5$\,mm. Here $\ell/S_{\mathrm{span}} = 1.004$, which 
 Method & RMSE & max err & sag & sag err & arc drift & wall & settled \\
        & [mm] & [mm] & [mm] & [mm] & [\%] & [s] & \\
 \midrule
-    Newton cable (add\_rod + VBD) & 1.60 & 13.91 & 221.3 & 1.9 & 2.872 & 16.6 & \checkmark \\
+    Newton cable - point pin (kink) & 1.60 & 13.91 & 221.3 & 1.9 & 2.872 & 16.6 & \checkmark \\
+    Newton cable - tape (rounded) & 26.29 & 93.44 & 215.4 & -4.1 & 2.549 & 18.6 & \checkmark \\
     PhysX capsule chain (D6) & 81.23 & 167.13 & 197.4 & -22.0 & -0.225 & 15.8 & -- \\
-    Warp XPBD rod & 170.89 & 314.01 & 200.5 & -19.0 & -0.466 & 0.6 & \checkmark \\
+    Warp XPBD rod & 46.53 & 95.09 & 212.1 & -7.3 & -0.070 & 0.6 & \checkmark \\
 \bottomrule
 \end{tabular}
 \caption{Every method against the analytic catenary. Reference sag
@@ -95,9 +96,10 @@ Profile extracted from a photograph with \texttt{image\_utils/extract\_cable\_pr
 \toprule
 Method & RMSE vs real [mm] & max error [mm] \\
 \midrule
-    Newton cable (add\_rod + VBD) & 75.04 & 157.96 \\
+    Newton cable - point pin (kink) & 75.04 & 157.96 \\
+    Newton cable - tape (rounded) & 61.97 & 157.95 \\
     PhysX capsule chain (D6) & 34.34 & 138.38 \\
-    Warp XPBD rod & 195.53 & 331.51 \\
+    Warp XPBD rod & 49.87 & 141.16 \\
 \bottomrule
 \end{tabular}
 

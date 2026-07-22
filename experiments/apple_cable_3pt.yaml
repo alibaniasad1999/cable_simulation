@@ -75,9 +75,16 @@ simulation:
   # newton_engine is deliberately absent: Isaac Sim 6 cannot represent a
   # cable fixed at both ends through USD (an articulation must be a tree, and
   # a doubly-clamped cable is a loop).
-  methods: [newton_cable, physx_capsule, warp_rod]
+  # newton_cable_tape is the SAME solver as newton_cable, run with the middle
+  # support modelled as a flat strip of tape rather than a point pin, so the
+  # kink-versus-rounded contrast appears directly in the overlay and tables.
+  methods: [newton_cable, newton_cable_tape, physx_capsule, warp_rod]
 
-  segments: 60
+  # 150 rather than 60: at 60 the ~15 mm segments show as visible facets in the
+  # overlay, especially where curvature is high near the middle support. 150
+  # (~6 mm segments) renders smoothly; the settled shapes and every metric are
+  # unchanged to within a millimetre.
+  segments: 150
   max_time: 8.0
   settle_vel: 2.0e-3
 
@@ -96,3 +103,12 @@ simulation:
   # what the other methods do -- use it when comparing methods on equal terms
   # rather than reproducing this photograph.
   mid_support: clamp
+
+  # Bending length for the Warp rod, l=(EI/w)^(1/3) [m]. The Warp rod is the only
+  # method with a true position-only pin, so its shape depends on bending
+  # stiffness. At the stand-in material EI (l~0.15 m) a slack rod's draped state
+  # is unstable and it buckles into an arch; the real cable drapes with rounding
+  # confined to ~2 cm, i.e. l~0.02 m, so that is used here. This is read from the
+  # observed rounding scale, NOT tuned to match the catenary (it lands ~50 mm off
+  # it). See analysis/warp_bend_sensitivity.py.
+  warp_bend_length_m: 0.02

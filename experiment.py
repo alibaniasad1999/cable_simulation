@@ -95,6 +95,13 @@ class SimulationSpec:
     stretch_damping: float = DEFAULT_STRETCH_DAMPING
     bend_damping: float = DEFAULT_BEND_DAMPING
     mid_support: str = "clamp"   # matches a taped clamp; "pin" frees the angle
+    # Half-width [m] of the flat plateau used by the 'newton_cable_tape' method,
+    # which models the middle support as a strip of tape rather than a point pin.
+    tape_halfwidth: float = 0.012
+    # Bending length l=(EI/w)^(1/3) [m] for the Warp rod. null -> the material EI,
+    # which for the stand-in moduli is ~0.15 m, where a slack rod buckles. The
+    # real cable's ~2 cm rounding scale implies ~0.02 m, where it drapes.
+    warp_bend_length_m: float | None = None
 
 
 @dataclass

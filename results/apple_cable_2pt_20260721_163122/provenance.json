@@ -1,0 +1,14 @@
+{
+  "cable.length_m": {
+    "source": "measured",
+    "value": 0.8928702822077956,
+    "image": "images/two_point.jpg",
+    "per_span_m": [
+      0.8928702822077956
+    ],
+    "sag_m": [
+      0.3838435627646011
+    ],
+    "scale_mm_per_px": 0.1931087612447896
+  }
+}

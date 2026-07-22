@@ -57,6 +57,7 @@ from hang_common import (  # noqa: E402
     initial_polyline,
     method_parser,
     scenario_from_args,
+    tape_polyline,
     write_outputs,
 )
 
@@ -156,9 +157,20 @@ def main() -> int:
                    help="velocity damping per substep [0..1]")
     p.add_argument("--bend-compliance", type=float, default=None,
                    help="override the derived bend compliance h^3/(8 E I) [m/N]")
+    p.add_argument("--bend-length", type=float, default=None,
+                   help="set bending stiffness from the elasto-gravitational length "
+                        "l=(EI/w)^(1/3) [m] instead of the material EI: EI=w*l^3. "
+                        "The placeholder material gives l~0.15 m, at which a slack "
+                        "rod's draped state is unstable and buckles; the real cable "
+                        "drapes with rounding confined to ~2 cm, i.e. l~0.02 m.")
     p.add_argument("--stretch-compliance", type=float, default=None,
                    help="override the derived stretch compliance h/(E A) [m/N]")
     p.add_argument("--device", default=None, help="warp device, e.g. cuda:0 or cpu")
+    p.add_argument("--init", choices=["catenary", "tape"], default="catenary",
+                   help="initial shape (3-support only): 'catenary' starts on the "
+                        "analytic solution, which KINKS at the middle support and can "
+                        "seed an upward buckle; 'tape' starts on the smooth flat-tape "
+                        "shape, draped and kink-free")
     args = p.parse_args()
 
     scenario = scenario_from_args(args)
@@ -169,7 +181,10 @@ def main() -> int:
     wp.init()
     device = args.device or ("cuda:0" if wp.is_cuda_available() else "cpu")
 
-    pts = initial_polyline(scenario)
+    if args.init == "tape" and scenario.mid_node is not None:
+        pts, _ = tape_polyline(scenario, 0.012)
+    else:
+        pts = initial_polyline(scenario)
     n = len(pts)
     rest = np.linalg.norm(np.diff(pts, axis=0), axis=1).astype(np.float32)
     h = float(rest.mean())
@@ -177,9 +192,18 @@ def main() -> int:
     alpha_s = (args.stretch_compliance
                if args.stretch_compliance is not None
                else h / cable.axial_stiffness)
-    alpha_b = (args.bend_compliance
-               if args.bend_compliance is not None
-               else h ** 3 / (8.0 * cable.bending_stiffness))
+    # Bending compliance, in order of precedence: explicit compliance, then a
+    # physical bending length l (EI = w l^3), then the material EI. The bending
+    # length is the honest control here: it is read from the cable's visible
+    # rounding scale, not tuned to sit on the catenary.
+    if args.bend_compliance is not None:
+        alpha_b = args.bend_compliance
+    elif args.bend_length is not None:
+        w = (cable.mass / cable.length) * scenario.gravity          # weight/length [N/m]
+        ei_eff = w * args.bend_length ** 3                          # [N m^2]
+        alpha_b = h ** 3 / (8.0 * ei_eff)
+    else:
+        alpha_b = h ** 3 / (8.0 * cable.bending_stiffness)
 
     # Held nodes get infinite mass (inverse mass 0).
     m_node = cable.mass / n
@@ -207,6 +231,7 @@ def main() -> int:
         "segment_length_m": h,
         "stretch_compliance_m_per_N": alpha_s,
         "bend_compliance_m_per_N": alpha_b,
+        "bend_length_m": args.bend_length,
         "substeps": args.substeps,
         "iterations": args.iterations,
         "damping": args.damping,

@@ -12,10 +12,11 @@
 
 name: apple_cable_2pt
 description: >
-  1 m Apple charger cable taped to a door at two level points, 35 cm apart. Photographed square-on. The tape clamps the cable's
-  ANGLE as well as its position, so the ends leave vertically rather than at
-  the catenary's natural exit angle -- expect a systematic deviation from the
-  ideal pinned catenary near each clamp.
+  Apple charger cable taped to a vertical door at two level clamps 35 cm apart,
+  photographed square-on. The same physical cable as apple_cable_3pt, so the
+  length measured here and there must agree -- which is the point of running
+  both. The tape clamps the cable's ANGLE as well as its position, so the ends
+  leave close to vertical rather than at the catenary's natural exit angle.
 
 cable:
   # Cross-section and material. These describe a TPU jacket and are the values
@@ -37,7 +38,7 @@ cable:
 
 supports:
   # Clamp positions in metres from the leftmost clamp, left to right.
-  # Measured with a tape: 0, 15 cm, 35 cm.
+  # Measured with a tape: the two clamps are 35 cm apart.
   x_m: [0.0, 0.35]
 
   # All clamps at one height. Only the differences matter for the shape; the

@@ -1,0 +1,17 @@
+ODE model (numerically integrated, closed form not used)
+  governing equation : z'' = sqrt(1 + z'^2) / a
+  span S             : 0.3500 m
+  length L           : 0.8929 m   (L/S = 2.5511)
+  solved a = H/w     : 0.067695 m
+  sag                : 383.844 mm
+  lowest point       : 0.616156 m
+  arc-length check   : 0.892870 m vs target 0.892870 m (+0.0000 mm)
+
+closed form  z = a cosh((x - S/2)/a) + c
+  a (closed)         : 0.067695 m   (ODE: 0.067695 m, differs by 0.001 um)
+  sag (closed)       : 383.844 mm (ODE: 383.844 mm, differs by 0.007 um)
+  max |z_ODE - z_closed| : 0.007 um
+
+  AGREE. The numerical solution of the ODE and the closed form describe
+  the same curve, so the analytic reference the benchmark scores against
+  is verified, not merely asserted.

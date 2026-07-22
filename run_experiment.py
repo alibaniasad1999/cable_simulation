@@ -147,6 +147,9 @@ def main() -> int:
 
     method_scripts = {
         "newton_cable": "hang_newton_cable.py",
+        # Same solver as newton_cable, run under the flat-tape middle boundary
+        # condition instead of a point pin, so the two appear side by side.
+        "newton_cable_tape": "hang_newton_cable.py",
         "newton_engine": "hang_newton_engine.py",
         "physx_capsule": "hang_physx_capsule.py",
         "physx_fem": "hang_physx_fem.py",
@@ -162,13 +165,18 @@ def main() -> int:
         cmd = [isaac_py, os.path.join(ROOT, "methods", method_scripts[method]),
                "--scenario", scenario_path, "--out", mdir]
         # Solver knobs are only accepted by the Newton cable method; the others
-        # derive their own from the shared scenario.
-        if method == "newton_cable":
+        # derive their own from the shared scenario. The _tape variant forces the
+        # tape boundary condition regardless of the config's mid_support default.
+        if method in ("newton_cable", "newton_cable_tape"):
+            mid = "tape" if method == "newton_cable_tape" else exp.simulation.mid_support
             cmd += ["--substeps", str(exp.simulation.substeps),
                     "--iterations", str(exp.simulation.iterations),
                     "--stretch-damping", str(exp.simulation.stretch_damping),
                     "--bend-damping", str(exp.simulation.bend_damping),
-                    "--mid-support", exp.simulation.mid_support]
+                    "--mid-support", mid,
+                    "--tape-halfwidth", str(exp.simulation.tape_halfwidth)]
+        if method == "warp_rod" and exp.simulation.warp_bend_length_m is not None:
+            cmd += ["--bend-length", str(exp.simulation.warp_bend_length_m)]
         if args.dry_run:
             print("    " + " ".join(cmd))
             continue

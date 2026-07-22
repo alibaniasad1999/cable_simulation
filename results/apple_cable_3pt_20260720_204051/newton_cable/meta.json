@@ -3,7 +3,7 @@
   "arc_length_m": 0.9188366268791982,
   "arc_length_target_m": 0.8931888802527346,
   "final_max_speed_mps": 0.000978657282172713,
-  "label": "Newton cable (add_rod + VBD)",
+  "label": "Newton cable - point pin (kink)",
   "lowest_z_m": 0.7786916319608755,
   "max_abs_error_mm": 19.07975928643968,
   "method": "newton_cable",

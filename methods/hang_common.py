@@ -306,6 +306,86 @@ def initial_polyline(scenario: Scenario) -> np.ndarray:
     return pts
 
 
+def _resample_equal_arc(x, z, n_seg: int):
+    """Resample a dense ``(x, z)`` curve to ``n_seg + 1`` points spaced equally in
+    arc length. Same inversion ``initial_polyline`` uses, factored out so the
+    tape arms can reuse it."""
+    x = np.asarray(x, float)
+    z = np.asarray(z, float)
+    seg = np.hypot(np.diff(x), np.diff(z))
+    s = np.concatenate([[0.0], np.cumsum(seg)])
+    t = np.linspace(0.0, s[-1], n_seg + 1)
+    return np.interp(t, s, x), np.interp(t, s, z)
+
+
+def tape_polyline(scenario: "Scenario", tape_halfwidth: float) -> tuple[np.ndarray, int]:
+    """Initial shape when the middle support is a flat TAPE, not a point pin.
+
+    A point pin forces the two catenary spans to meet at the middle support with
+    OPPOSITE slopes -- an unavoidable upward kink, because a catenary's only
+    horizontal tangent is its lowest point and the middle support is a high
+    point. A strip of tape instead holds a short segment of cable flat against
+    the wall, so the cable leaves the support HORIZONTALLY and the rod's bending
+    stiffness rounds the top smoothly -- which is what the taped cable actually
+    does (see the overlay: the photograph rounds over, the pinned catenary
+    corners).
+
+    This builds that shape: a horizontal plateau of half-width ``tape_halfwidth``
+    [m] at support height, with a catenary arm to each outer support. Every
+    segment keeps arc length ``L / num_segments``, so the rod's rest length --
+    and therefore the total cable length -- is identical to ``initial_polyline``;
+    only the middle is reshaped.
+
+    Returns:
+        ``(pts, k)`` -- ``pts`` is ``(num_segments+1, 3)`` and ``k`` is the number
+        of plateau segments on EACH side of the middle node, so the caller can
+        clamp exactly the plateau bodies ``range(mid-k, mid+k)``.
+    """
+    if scenario.num_points != 3:
+        raise ValueError("tape_polyline is only defined for the 3-support case")
+    n = scenario.num_segments
+    m = scenario.mid_node
+    seg_len = scenario.length / n
+    span = scenario.span
+    mid_x = scenario.support_x[1]
+    z0 = scenario.height
+
+    # Plateau half-width in whole segments: at least one, and leaving at least
+    # two arm segments on each side so each arm can still bend into its sag.
+    k = max(1, int(round(tape_halfwidth / seg_len)))
+    k = min(k, m - 2, (n - m) - 2)
+    xL = mid_x - k * seg_len
+    xR = mid_x + k * seg_len
+
+    def arm(x_a: float, x_b: float, n_seg: int):
+        """Catenary between ``(x_a, z0)`` and ``(x_b, z0)``, ``n_seg`` equal-arc
+        segments, returned as ascending-x node coordinates."""
+        arc = n_seg * seg_len
+        sol = catenary.solve(x_b - x_a, arc, z0, num_supports=2)
+        dx, dz = sol.sample(20001)
+        return _resample_equal_arc(np.asarray(dx) + x_a, dz, n_seg)
+
+    lx, lz = arm(0.0, xL, m - k)          # nodes 0 .. m-k
+    rx, rz = arm(xR, span, n - m - k)     # nodes m+k .. n
+
+    pts = np.zeros((n + 1, 3))
+    pts[0:m - k + 1, 0] = lx
+    pts[0:m - k + 1, 2] = lz
+    pts[m + k:n + 1, 0] = rx
+    pts[m + k:n + 1, 2] = rz
+    # Plateau last, so its shared edges are exact: horizontal at support height.
+    plate = np.arange(m - k, m + k + 1)
+    pts[plate, 0] = mid_x + (plate - m) * seg_len
+    pts[plate, 2] = z0
+
+    # Pin the constrained nodes exactly onto their supports (interpolation can
+    # leave them microns off, and the solver welds there).
+    pts[0] = scenario.supports[0]
+    pts[m] = scenario.supports[1]
+    pts[-1] = scenario.supports[-1]
+    return pts, k
+
+
 def arc_length(nodes: np.ndarray) -> float:
     """Total polyline arc length [m]."""
     return float(np.sum(np.linalg.norm(np.diff(np.asarray(nodes), axis=0), axis=1)))

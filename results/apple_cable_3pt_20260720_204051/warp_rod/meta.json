@@ -1,16 +1,16 @@
 {
-  "arc_drift_pct": -0.4659605491867801,
-  "arc_length_m": 0.8890269724410337,
+  "arc_drift_pct": -0.07034696358416671,
+  "arc_length_m": 0.8925605489964054,
   "arc_length_target_m": 0.8931888802527346,
-  "final_max_speed_mps": 1.8699802965313233e-05,
+  "final_max_speed_mps": 0.0003524361520793122,
   "label": "Warp XPBD rod",
-  "lowest_z_m": 0.7995357871055603,
-  "max_abs_error_mm": 314.02969469103624,
+  "lowest_z_m": 0.7878694772720337,
+  "max_abs_error_mm": 103.8314700126648,
   "method": "warp_rod",
   "num_nodes": 61,
-  "rmse_mm": 125.44494470268359,
-  "sag_error_mm": -18.972229500549638,
-  "sag_m": 0.20046421289443972,
+  "rmse_mm": 56.307993031788385,
+  "sag_error_mm": -7.30591966702307,
+  "sag_m": 0.2121305227279663,
   "sag_reference_m": 0.21943644239498936,
   "scenario": {
     "gravity": 9.81,
@@ -27,11 +27,12 @@
     "span": 0.35
   },
   "settled": true,
-  "settled_time_s": 1.0000000000000013,
-  "sim_time_s": 1.0000000000000013,
+  "settled_time_s": 1.100000000000001,
+  "sim_time_s": 1.100000000000001,
   "solver": {
     "average_window_s": 0.5,
-    "bend_compliance_m_per_N": 0.00040899493785042176,
+    "bend_compliance_m_per_N": 0.17444198680810796,
+    "bend_length_m": 0.02,
     "damping": 0.02,
     "device": "cuda:0",
     "iterations": 12,
@@ -41,5 +42,5 @@
     "substeps": 16,
     "warp_version": "1.13.0"
   },
-  "wall_time_s": 0.582
+  "wall_time_s": 0.581
 }

@@ -86,6 +86,7 @@ from hang_common import (  # noqa: E402
     initial_polyline,
     method_parser,
     scenario_from_args,
+    tape_polyline,
     write_outputs,
 )
 
@@ -95,7 +96,15 @@ LABEL = "Newton cable (add_rod + VBD)"
 
 def build_model(scenario, cable, args):
     """Assemble the Newton model: one rod, clamped at the support nodes."""
-    pts = initial_polyline(scenario)
+    # The 'tape' middle support starts the cable on a flat horizontal plateau so
+    # the rod's bending stiffness rounds the top, instead of the point-pin's
+    # imposed kink. tape_k is the number of plateau segments each side of the
+    # middle node, used below to clamp exactly the flat bodies.
+    tape_k = None
+    if args.mid_support == "tape" and scenario.mid_node is not None:
+        pts, tape_k = tape_polyline(scenario, args.tape_halfwidth)
+    else:
+        pts = initial_polyline(scenario)
     seg_len = float(np.mean(np.linalg.norm(np.diff(pts, axis=0), axis=1)))
     stretch_k, bend_k = rod_stiffness(cable, seg_len)
 
@@ -121,7 +130,12 @@ def build_model(scenario, cable, args):
         label="cable",
     )
 
-    clamped = clamp_indices(scenario, len(bodies), args.mid_support)
+    if tape_k is not None:
+        # Hold the whole flat plateau (the strip of tape) plus the two ends.
+        m = scenario.mid_node
+        clamped = sorted(set([0, len(bodies) - 1] + list(range(m - tape_k, m + tape_k))))
+    else:
+        clamped = clamp_indices(scenario, len(bodies), args.mid_support)
     for b in clamped:
         builder.body_mass[b] = 0.0
         builder.body_inv_mass[b] = 0.0
@@ -145,6 +159,8 @@ def build_model(scenario, cable, args):
         "num_joints": len(joints),
         "clamped_bodies": clamped,
         "mid_support": args.mid_support,
+        "tape_halfwidth_m": args.tape_halfwidth if tape_k is not None else None,
+        "tape_segments_each_side": tape_k,
         "vbd_iterations": args.iterations,
         "substeps": args.substeps,
         "density_kg_m3": cfg.density,
@@ -237,11 +253,17 @@ def main() -> int:
                    help="multiplier on the beam-theory stretch stiffness E*A/L")
     p.add_argument("--bend-damping", type=float, default=1.0e-4)
     p.add_argument("--stretch-damping", type=float, default=1.0e-2)
-    p.add_argument("--mid-support", choices=["clamp", "pin"], default="clamp",
+    p.add_argument("--mid-support", choices=["clamp", "pin", "tape"], default="clamp",
                    help="3-support case: 'clamp' holds both capsules at the middle "
                         "node (imposes the catenary kink); 'pin' holds one, letting "
                         "the cable pivot -- matches the other methods' boundary "
-                        "condition, so use it for an equal-terms comparison")
+                        "condition; 'tape' holds a short flat plateau, so the cable "
+                        "leaves the support horizontally and bending rounds the top "
+                        "instead of cornering -- this is what a strip of tape does")
+    p.add_argument("--tape-halfwidth", type=float, default=0.012,
+                   help="'tape' mid-support only: half-width [m] of the flat "
+                        "plateau at the middle support (default 12 mm, i.e. a "
+                        "~24 mm strip of tape)")
     p.add_argument("--device", default=None, help="warp device, e.g. cuda:0 or cpu")
     p.add_argument("--view-style", choices=["tube", "capsules"], default="tube",
                    help="--gui rendering: 'tube' draws one continuous cable (how "
@@ -308,7 +330,13 @@ def main() -> int:
 
     nodes = monitor.equilibrium_nodes(args.average_window)
     info["average_window_s"] = args.average_window
-    write_outputs(args.out, scenario, monitor, nodes, METHOD, LABEL, extra=info)
+    # For 3 supports the middle boundary condition is the whole point of the
+    # comparison, so it goes in the label; the two Newton runs sit side by side.
+    label = LABEL
+    if scenario.num_points == 3:
+        label = ("Newton cable - tape (rounded)" if args.mid_support == "tape"
+                 else "Newton cable - point pin (kink)")
+    write_outputs(args.out, scenario, monitor, nodes, METHOD, label, extra=info)
 
     if view.enabled:
         # Show the reported equilibrium shape, then wait: without this the window

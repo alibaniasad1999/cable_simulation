@@ -61,10 +61,12 @@ import catenary  # noqa: E402
 from cable_config import with_length  # noqa: E402
 from hang_common import Scenario  # noqa: E402
 
-ORDER = ["newton_cable", "newton_engine", "physx_capsule", "physx_fem", "warp_rod"]
+ORDER = ["newton_cable", "newton_cable_tape", "newton_engine",
+         "physx_capsule", "physx_fem", "warp_rod"]
 
 FAMILY = {
     "newton_cable": "Newton",
+    "newton_cable_tape": "Newton",
     "newton_engine": "Newton",
     "physx_capsule": "PhysX (pure Isaac Sim)",
     "physx_fem": "PhysX (pure Isaac Sim)",
@@ -73,6 +75,7 @@ FAMILY = {
 
 COLORS = {
     "newton_cable": "#0072B2",
+    "newton_cable_tape": "#56B4E9",
     "newton_engine": "#56B4E9",
     "physx_capsule": "#D55E00",
     "physx_fem": "#E69F00",
@@ -188,29 +191,56 @@ def make_figures(run_dir, scenario, results, real, rows):
     made = []
 
     # ---- overlay ----
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(cx, cz, "--", color="0.3", lw=2.0, label="analytic catenary", zorder=3)
-    for method, data in results.items():
-        p = data["profile"]
-        ax.plot(p[:, 0], p[:, 1], "-", lw=2.0, color=COLORS.get(method),
-                label=data["meta"].get("label", method))
-    if real is not None:
-        ax.plot(real[:, 0], real[:, 1], ":", lw=2.5, color=COLORS["real"],
-                label="real cable (photo)")
+    fig, ax = plt.subplots(figsize=(10.5, 6.4))
+
+    def draw_curves(target, lw_scale=1.0, label=True):
+        target.plot(cx, cz, "--", color="0.3", lw=2.0 * lw_scale,
+                    label="analytic catenary" if label else None, zorder=3)
+        for method, data in results.items():
+            p = data["profile"]
+            target.plot(p[:, 0], p[:, 1], "-", lw=2.0 * lw_scale,
+                        color=COLORS.get(method),
+                        label=data["meta"].get("label", method) if label else None)
+        if real is not None:
+            target.plot(real[:, 0], real[:, 1], ":", lw=2.5 * lw_scale,
+                        color=COLORS["real"],
+                        label="real cable (photo)" if label else None)
+
+    draw_curves(ax)
     sup = scenario.supports
     ax.plot(sup[:, 0], sup[:, 2], "o", color="crimson", ms=11, zorder=6, label="supports")
     ax.set_xlabel("x  [m]")
     ax.set_ylabel("z  [m]")
     ax.set_aspect("equal", "box")
     ax.grid(True, alpha=0.3)
-    # The cable sags away from the top of the axes, so upper-centre is the one
-    # region guaranteed to be clear of the curves in every scenario.
-    ax.legend(loc="upper center", fontsize=9, ncol=2, framealpha=0.92)
+
+    # For 3 supports, a zoom on the middle support is the whole story: the point
+    # pin corners (an unavoidable catenary kink), the tape model rounds over, and
+    # the photograph rounds over too. The inset makes that legible at the scale
+    # the full plot cannot.
+    if scenario.num_points == 3:
+        mid_x = float(scenario.support_x[1])
+        axin = ax.inset_axes([0.635, 0.55, 0.345, 0.42])
+        draw_curves(axin, lw_scale=1.1, label=False)
+        axin.plot([mid_x], [scenario.height], "o", color="crimson", ms=7, zorder=6)
+        axin.set_xlim(mid_x - 0.05, mid_x + 0.06)
+        axin.set_ylim(scenario.height - 0.05, scenario.height + 0.02)
+        axin.set_xticklabels([])
+        axin.set_yticklabels([])
+        axin.tick_params(length=0)
+        axin.set_title("middle support (zoom)", fontsize=8)
+        axin.grid(True, alpha=0.3)
+        ax.indicate_inset_zoom(axin, edgecolor="0.45", alpha=0.7)
+
+    # Legend below the axes: with the Warp rod rising above the clamps at this
+    # slackness there is no in-axes region guaranteed clear of every curve.
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.11), fontsize=9,
+              ncol=3, framealpha=0.95)
     ax.set_title(f"Cable hang, {scenario.num_points} supports  "
                  f"(L={scenario.length:.2f} m, S={scenario.span:.2f} m)")
     fig.tight_layout()
     p = os.path.join(run_dir, "overlay.png")
-    fig.savefig(p, dpi=160)
+    fig.savefig(p, dpi=160, bbox_inches="tight")
     plt.close(fig)
     made.append(p)
 
