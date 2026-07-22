@@ -45,6 +45,13 @@ python3 analysis/make_thesis_report.py --run results/<run> \
     --sweep results/<a sweep dir> --pdf
 ```
 
+For a reader who has to **decide** rather than review, there is a separate
+two-page brief — comparison table, the real-cable measurement, one overlay:
+
+```bash
+~/isaacsim/python.sh analysis/decision_brief.py --run results/<run> --pdf
+```
+
 **A new cable needs no code — just a new config file.** Copy
 `experiments/apple_cable_3pt.yaml`, change the photo path and support positions,
 and run it.
@@ -246,6 +253,7 @@ methods/
 analysis/
   compare.py               metrics.csv, overlay, errors, report.tex
   make_thesis_report.py    the full PDF write-up
+  decision_brief.py        2-page "which one do we adopt?" brief
   warp_bend_sensitivity.py Warp stiffness study
   sweep_report.py          hyperparameter-sweep report
 image_utils/
