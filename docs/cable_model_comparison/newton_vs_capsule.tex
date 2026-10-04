@@ -1,0 +1,224 @@
+\documentclass[10pt,a4paper]{article}
+\usepackage[margin=1.7cm,top=1.3cm,bottom=1.2cm]{geometry}
+\usepackage{booktabs,array,xcolor,amsmath}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,calc,decorations.pathmorphing}
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{4pt}
+
+\definecolor{good}{HTML}{1B7F4B}
+\definecolor{bad}{HTML}{B3261E}
+\definecolor{vox}{HTML}{3B6FB6}
+\definecolor{cab}{HTML}{222222}
+\definecolor{mute}{HTML}{6B6B6B}
+
+\newcommand{\panel}[1]{{\small\bfseries #1}}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\newcommand{\pro}{\par\hangindent=1.1em\hangafter=1\makebox[1.1em][l]{\textcolor{good}{\textbf{+}}}}
+\newcommand{\con}{\par\hangindent=1.1em\hangafter=1\makebox[1.1em][l]{\textcolor{bad}{\textbf{--}}}}
+
+% one joint between two capsules; #1 stretch colour, #2 twist colour
+\newcommand{\jointpic}[2]{%
+\begin{tikzpicture}[x=1cm,y=1cm,>=Stealth]
+  \draw[cab,line width=0.8pt,fill=black!8,rounded corners=3.2mm] (-3.1,-0.32) rectangle (-0.25,0.32);
+  \draw[cab,line width=0.8pt,fill=black!8,rounded corners=3.2mm] (0.25,-0.32) rectangle (3.1,0.32);
+  \fill[cab] (0,0) circle (0.07);
+  % stretch
+  \draw[<->,#1,line width=1pt] (-0.55,-0.62) -- (0.55,-0.62);
+  % bend
+  \draw[->,good,line width=1pt] (1.7,0.5) arc (20:70:1.5);
+  % twist
+  \draw[->,#2,line width=1pt] (2.55,-0.48) arc (-100:190:0.16 and 0.48);
+\end{tikzpicture}}
+
+\begin{document}
+
+\begin{center}
+{\Large\bfseries Cable models compared: Newton rod and PhysX capsule chain}\\[2pt]
+{\small Thin cable ($d=4$\,mm), and a thick cable ($d=30$\,mm) where volumetric FEM also works}
+\end{center}
+
+\textbf{The difference in one line.} Both models are a chain of capsules. They differ
+in what the joint between two capsules can do: the capsule chain has springs for
+\emph{bending only}; the Newton rod has springs for \emph{stretch, bend and twist},
+all derived from the material.
+
+\vspace{3pt}
+% ------------------------------------------------------------ joint pictures
+\begin{minipage}[t]{0.49\linewidth}
+\centering
+\panel{PhysX capsule chain (D6 joint)}\\[4pt]
+\jointpic{mute}{bad}\\[3pt]
+{\footnotesize
+\textcolor{mute}{stretch: locked}\quad
+\textcolor{good}{bend: spring $EI/h$}\quad
+\textcolor{bad}{twist: damper, no spring}}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.49\linewidth}
+\centering
+\panel{Newton rod (\texttt{add\_rod}, VBD solver)}\\[4pt]
+\jointpic{good}{good}\\[3pt]
+{\footnotesize
+\textcolor{good}{stretch: spring $EA/h$}\quad
+\textcolor{good}{bend: spring $EI/h$}\quad
+\textcolor{good}{twist: spring}}
+\end{minipage}
+
+\vspace{8pt}
+\panel{1. What each joint carries}
+
+\vspace{1pt}
+\renewcommand{\arraystretch}{1.2}
+{\small
+\begin{tabular}{@{}L{2.6cm} L{4.6cm} L{4.6cm} L{4.6cm}@{}}
+\toprule
+ & \textbf{Capsule chain} (our script) & \textbf{Newton rod 1.2.0} (our script) & \textbf{Newton rod, current docs} \\
+\midrule
+Stretch (force along the cable) & locked: links are rigid, no axial elasticity
+  & spring $EA/h$ & spring (stretch slot) \\
+Bend (moment) & spring $EI/h$ on two axes & spring $EI/h$ & spring (bend slot) \\
+Twist (torque about the axis) & stiffness $0$, damping only
+  & carried by the joint's angular spring & its own spring (twist slot) \\
+Shear & locked & not modelled & spring (shear slot) \\
+Bending hysteresis & none & none & optional Dahl friction \\
+Time integration & PhysX iterative, 1/480\,s step & VBD, implicit & VBD, implicit \\
+\bottomrule
+\end{tabular}}
+
+\vspace{6pt}
+\panel{2. Calculations, thin cable}
+\quad{\small $L=893$\,mm, $r=2$\,mm, $E=80$\,MPa, $\nu=0.45$, 150 segments.}
+
+\vspace{2pt}
+{\small
+\begin{minipage}[t]{0.50\linewidth}
+\begin{tabular}{@{}l@{\quad}l@{}}
+segment length & $h = L/150 = 893/150 = 5.95$\,mm \\
+area & $A = \pi r^2 = 1.26\times10^{-5}$\,m$^2$ \\
+second moment & $I = \pi r^4/4 = 1.26\times10^{-11}$\,m$^4$ \\
+stretch rigidity & $EA = 1005$\,N \\
+bend rigidity & $EI = 1.01\times10^{-3}$\,N\,m$^2$ \\
+twist rigidity & $GJ = EI/(1+\nu) = 6.9\times10^{-4}$\,N\,m$^2$ \\
+\end{tabular}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.48\linewidth}
+\begin{tabular}{@{}l@{\quad}l@{}}
+stretch spring & $EA/h = 1.69\times10^{5}$\,N/m \\
+bend spring & $EI/h = 0.169$\,N\,m/rad \\
+twist spring & $GJ/h = 0.116$\,N\,m/rad \\[3pt]
+capsule chain twist & $0$ \; (should be $0.116$) \\
+capsule chain stretch & rigid \; (should be $1.69\times10^{5}$) \\
+\end{tabular}
+\end{minipage}}
+
+\vspace{6pt}
+\panel{3. Measured in our benchmark}
+\quad{\small three supports, 150 segments, run \texttt{apple\_cable\_3pt\_150}, \texttt{metrics.csv}.}
+
+\vspace{1pt}
+{\small
+\begin{center}
+\begin{tabular}{@{}l c c c c c@{}}
+\toprule
+ & error vs catenary & error vs photo & length drift & settled & wall time \\
+\midrule
+Newton rod (point pin) & \textbf{0.9\,mm} & 75\,mm & 0.86\,\% & yes, 1.1\,s & 12.9\,s \\
+Newton rod (tape support) & 21\,mm & 65\,mm & 1.06\,\% & yes, 1.0\,s & 11.7\,s \\
+PhysX capsule chain & 74\,mm & \textbf{33\,mm} & 0.46\,\% & no, after 8.1\,s & 29.0\,s \\
+\bottomrule
+\end{tabular}
+\end{center}}
+
+\vspace{-2pt}
+{\small The test is a planar hang: it exercises weight and bending, not twist. The
+twist comparison above comes from the joint definitions, not from a measurement.}
+
+\vspace{6pt}
+\panel{4. Pros and cons, thin cable}
+
+\vspace{2pt}
+{\small
+\begin{minipage}[t]{0.49\linewidth}\setlength{\parskip}{1.5pt}
+\textbf{Newton rod}
+\pro Torque and twist are transmitted elastically along the cable.
+\pro Tension comes from $EA$, so axial force is physical.
+\pro Stiffness set directly from $E$, $r$ and segment length.
+\pro Implicit solver: stable at high stiffness, settles in about 1\,s.
+\pro Matches the mathematics to 0.9\,mm.
+\pro GPU-batched and differentiable (Warp); couples two-way with rigid-body solvers.
+\con Through Isaac Sim 6 USD it cannot hold both ends (articulation must be a tree), so it runs standalone.
+\con Holding a body also holds its angle: no true pin.
+\con API still changing between versions.
+\con Largest length drift here (0.86\,\%).
+\end{minipage}\hfill
+\begin{minipage}[t]{0.48\linewidth}\setlength{\parskip}{1.5pt}
+\textbf{PhysX capsule chain}
+\pro Native Isaac Sim: USD, Isaac Lab, ROS\,2, sensors, contact with robots.
+\pro Both ends fixed works directly.
+\pro Closest to the photographed cable (33\,mm).
+\pro Smallest length drift (0.46\,\%), because links are rigid.
+\con No twist spring in our setup: a torque spins the cable instead of loading it.
+\con No axial elasticity: tension is a constraint force, not $EA\,\varepsilon$.
+\con 150 rigid links solved iteratively: not settled after 8\,s, slowest run.
+\con 74\,mm from the catenary.
+\con Not differentiable.
+\end{minipage}}
+
+\clearpage
+\panel{5. Thick cable, $d=30$\,mm: all three models work}
+\quad{\small same length and material.}
+
+\vspace{2pt}
+{\small
+\begin{minipage}[t]{0.42\linewidth}
+\begin{tabular}{@{}l@{\quad}l@{}}
+aspect ratio & $L/d = 893/30 = 30$ \\
+stretch rigidity & $EA = 56.5$\,kN \\
+bend rigidity & $EI = 3.18$\,N\,m$^2$ \\
+twist rigidity & $GJ = 2.19$\,N\,m$^2$ \\
+weight & $w = \rho A g = 16.6$\,N/m \\
+bending length & $(EI/w)^{1/3} = 0.58$\,m \\
+segments, $h=d$ & $893/30 \approx 30$ \\
+FEM voxels across & $30/6.9 = 4.4$ at $N=130$ \\
+FEM voxel count & $\tfrac{\pi}{4}\,4.4^2\cdot130 \approx 2000$ \\
+\end{tabular}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.57\linewidth}
+\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{@{}L{2.5cm} c c c@{}}
+\toprule
+ & \textbf{Capsule} & \textbf{Newton rod} & \textbf{FEM} \\
+\midrule
+Bending & yes & yes & yes \\
+Stretch & no & yes & yes \\
+Twist / torque & no spring & yes & yes \\
+Cross-section squeeze, contact pressure & no & no & yes \\
+True geometry, no rescaling & yes & yes & yes \\
+Unknowns to solve & 30 links & 30 links & $\approx$2000 voxels \\
+\bottomrule
+\end{tabular}
+\end{minipage}}
+
+\vspace{4pt}
+{\small At 30\,mm the cable is no longer a thin string: bending length $0.58$\,m is
+comparable to its $0.89$\,m length, so it behaves as a bent beam. Rod and capsule
+models stay cheap but need segments about one diameter long, so they resolve
+curvature with about 30 segments instead of 150. FEM costs more and is the only one that
+shows the cross-section deforming, for example where a gripper squeezes it.}
+
+\vspace{5pt}
+\fcolorbox{good}{good!7}{\parbox{\dimexpr\linewidth-2\fboxsep-2\fboxrule}{%
+\textbf{Summary.} Thin cable: use the Newton rod when twist, torque or tension
+matter, and the capsule chain when the cable must live inside an Isaac Sim scene;
+FEM is not an option. Thick cable: all three work; add FEM when the cross-section
+or contact pressure matters, otherwise the rod is the cheaper choice.}}
+
+\vspace{4pt}
+{\footnotesize \textbf{Sources.} Joint definitions and stiffness formulas:
+\texttt{hang\_physx\_capsule.py}, \texttt{hang\_newton\_cable.py}, \texttt{cable\_config.py} in \texttt{methods/}.
+Rod stretch, shear, bend and twist slots and Dahl friction: Newton documentation, \texttt{SolverVBD}.
+Two-way coupling: NVIDIA developer blog on Newton, 16 March 2026.
+FEM numbers: \texttt{docs/fem\_thin\_objects}.}
+
+\end{document}
