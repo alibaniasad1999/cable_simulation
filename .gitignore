@@ -33,3 +33,7 @@ env/
 *.nav
 *.snm
 *.vrb
+
+# Real captures and new run outputs (large files)
+/data/
+/results/
