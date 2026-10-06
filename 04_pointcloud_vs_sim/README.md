@@ -1,6 +1,7 @@
 # Part 4 — Real cable point cloud (.ply) vs simulation
 
-> Study notes. Prerequisite: Part 3 (a verified cable held by the simulated gripper).
+> Study notes. Prerequisites: Part 2 (cable with chosen size/segments/stiffness)
+> and Part 3 (cable held by the gripper, Option K).
 >
 > **The question of this part:** you have a `.ply` point cloud of a real cable
 > held in a real Franka hand. Rebuild the same situation in simulation and
@@ -208,15 +209,33 @@ tape-measured free length. Noise makes a zig-zag that **inflates** length.
 Occlusion **shortens** it. If the check fails by more than a few %, fix the
 segmentation before comparing anything.
 
-### 8. Rebuilding the scene in simulation
+### 8. Rebuilding the scene in Newton
 
-From Part 3, with every parameter from the data card:
-- cable free length = measured; `w` from weighing; `EI` from your table-edge test
-  (Part 3 §8) as the starting value;
-- hand orientation relative to gravity = from §5;
-- grasp offset/angle `T_hand_grasp` = from the photo / the cloud near the fingers;
-- let it **settle**, then read the centreline nodes;
-- express the result in the cloud frame with `T_cloud_hand · T_hand_sim`.
+Use **Option K** from Part 3 (kinematic attachment). It gives you exact control
+of the grasp, which is the thing you must match. Every number comes from the data card:
+
+| Newton input | where it comes from |
+|---|---|
+| `Rod.create_straight(length=...)` | tape-measured **free length** (fingers → tip). If held in the middle, two lengths and `grasp_body = N//2`. |
+| `radius` | calipers |
+| `density` | weighed mass per metre / (π r²), Part 2 §2.5 |
+| `segment_count` | from your convergence test (Part 2 §2.4) |
+| `bend_stiffness` | start from the table-edge `EI` (Part 2 §2.6), then **identified** in §11 |
+| `stretch_stiffness`, iterations | high enough that stretch < 0.5 % (Part 2 §2.6, §2.7) |
+| hand pose | **Route A**: recorded joint angles → `joint_q` → `eval_fk`. **Routes B/C**: any robot pose whose hand orientation relative to gravity equals the measured one (IK with that rotation target), or skip the robot and move only the clamped cable body. |
+| `T_tcp_grasp` | from the photo / the cloud near the fingers: where the cable leaves the fingers and at what angle |
+| floor/table | only if the real cable touches it; at the measured height |
+
+Then:
+1. start the cable straight along the grasp direction;
+2. step until **settled** (tip moves < 0.1 mm per 0.1 s for 1 s);
+3. read the cable bodies → nodes (Part 2 §2.9);
+4. transform the nodes into the cloud frame: `T_cloud_tcp · T_tcp_world · nodes`;
+5. save them (`.npy`) next to the capture. The comparison code (§9) reads files
+   and never needs Newton. Keep the two parts separate.
+
+**Parameter sweeps with worlds:** put each candidate `bend_stiffness` in its own
+world (Part 3 §3.5). One run then gives you the whole sweep for §11.
 
 > **Never ICP-align the simulated cable to the real cable.** Both live in the same
 > frame through the gripper. Aligning the cables would absorb exactly the error you
@@ -273,7 +292,7 @@ good result, not a failure.
 3. **Identifiability**: a cable held pointing straight **down** hangs straight
    whatever `EI` is, so the curve is flat. A cable leaving the hand
    **horizontally** droops by an amount that depends strongly on `EI`, so the
-   minimum is sharp. Look at `L/ℓ` (Part 3 §2) for your capture.
+   minimum is sharp. Part 2, Task 6 (bend stiffness sweep) shows this effect directly.
 4. **Ambiguity**: a lower tip can mean a *softer* cable **or** a grasp *tilted
    down*. If you fit both `EI` and the grasp angle, they trade off. Plot the 2-D
    error map and look for a long valley. Several captures at different hand
