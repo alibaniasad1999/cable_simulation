@@ -1,274 +1,493 @@
-# Cable-hang study — mathematics, a real cable, and four solvers
+# Cable simulation with a Franka robot — implementation guide
 
-Predict the shape of a cable hanging from 2 or 3 equal-height supports, and
-compare, on one axis, three independent answers:
+This repo is being **rebuilt from scratch**. All previous work (the cable-hang
+study: catenary math, photo measurement, Newton / PhysX / Warp solvers) now lives
+in [`legacy/`](legacy/) and is kept only for reference.
 
-- **MATH** — the governing differential equation, integrated numerically;
-- **REAL** — the cable in a photograph, measured by computer vision;
-- **SIMULATION** — several physics solvers (Newton, PhysX, Warp).
-
-The three-way structure is the whole point: any two can agree for uninteresting
-reasons, and only the third lets a disagreement be blamed on *numerical* error
-(vs MATH) as opposed to *modelling* error (vs REAL).
+This README is a **plan, not code**. It tells you what to build, in what order,
+which tools to use, what to check before moving on, and where the traps are. You
+write the code yourself.
 
 ---
 
-## Do it all with one command
+## The goal
 
-Everything about a cable — its photo, support positions, material, solver
-settings — lives in **one config file**. To run the complete study for a cable,
-point the driver at its file:
-
-```bash
-~/isaacsim/python.sh run_experiment.py --config experiments/apple_cable_3pt.yaml
+```
+ Stage 1            Stage 2              Stage 3               Stage 4
+ Franka in    ──▶   drive it with  ──▶   cable held in   ──▶   real point cloud
+ Newton             a joystick (Mac)     the gripper            vs simulation:
+                                                                how big is the error?
 ```
 
-That single command:
+1. **Franka in Newton.** Load the Franka Emika Panda into the
+   [Newton](https://github.com/newton-physics/newton) physics engine, see it in
+   the viewer, and move the hand to a target position.
+2. **Joystick teleoperation on macOS.** A gamepad (or SpaceMouse) moves the
+   Franka hand in real time.
+3. **A cable in the hand.** A deformable cable (a Newton rod) is held by the
+   gripper and swings/drapes as you move the arm.
+4. **Real vs sim.** You have a point cloud of a real cable held in a real
+   Franka hand. Rebuild that exact scene in simulation, then **measure the
+   difference** in millimetres.
 
-1. **measures** the cable's length and middle-split from the photograph,
-2. **integrates** the governing ODE and checks it against the closed form,
-3. **runs** every requested solver on the identical scenario,
-4. **compares** all of them against the math and the photo, writing
-   `metrics.csv`, `overlay.png`, `errors.png`, and a `report.tex`.
-
-Then build the full write-up (adds the hyperparameter sweep, the Warp
-bending-stiffness study, validity, and conclusions):
-
-```bash
-# sensitivity figure the report embeds
-~/isaacsim/python.sh analysis/warp_bend_sensitivity.py \
-    --scenario results/<run>/run.json --out results/<run>/warp_bend.png
-
-# assemble the PDF
-python3 analysis/make_thesis_report.py --run results/<run> \
-    --cross-check results/<the 2-point run> \
-    --sweep results/<a sweep dir> --pdf
-```
-
-For a reader who has to **decide** rather than review, there is a separate
-two-page brief — comparison table, the real-cable measurement, one overlay:
-
-```bash
-~/isaacsim/python.sh analysis/decision_brief.py --run results/<run> --pdf
-```
-
-**A new cable needs no code — just a new config file.** Copy
-`experiments/apple_cable_3pt.yaml`, change the photo path and support positions,
-and run it.
+Every stage ends with a **"done when"** checklist. Don't start the next stage
+until the checklist passes. Most of the pain in the legacy project came from
+debugging several layers at once.
 
 ---
 
-## The config file (the only thing you edit)
+## Suggested layout (create it as you go)
 
-```yaml
-name: apple_cable_3pt
-supports:
-  x_m: [0.0, 0.15, 0.35]   # support positions from the left clamp [m]
-  height_m: 1.0            # all supports share a height
-cable:
-  radius_m: 0.002          # material stand-ins; the shape barely depends on them
-  youngs_modulus_pa: 80.0e6
-  length_m: null           # null -> MEASURED from the photo (recommended)
-  mid_fraction: null       # null -> MEASURED from the photo
-image:
-  path: images/three_point.jpg
-  sat_max: 70              # HSV thresholds separating cable from background
-  val_min: 150
-simulation:
-  methods: [newton_cable, newton_cable_tape, physx_capsule, warp_rod]
-  segments: 150            # discretisation; 150 renders smoothly
-  substeps: 4              # Newton solver budget (from the sweep)
-  iterations: 200
-  mid_support: clamp       # middle-support model: clamp | pin | (tape via the _tape method)
-  tape_halfwidth_m: 0.012  # flat-tape plateau half-width [m]
-  warp_bend_length_m: 0.02 # Warp bending length l=(EI/w)^(1/3) [m]; null -> material EI
+```
+cable_simulation/
+├── README.md               this file
+├── legacy/                 old project, read-only reference
+├── pyproject.toml          dependencies (uv or pip)
+├── configs/
+│   ├── cable.yaml          cable properties (length, radius, mass, EI, segments)
+│   ├── robot.yaml          home pose, gains, gripper offset
+│   └── capture_XXX.yaml    one per real capture (cloud path, joint angles, camera)
+├── src/cablesim/
+│   ├── world.py            builds the Newton model (ground + robot + cable)
+│   ├── robot.py            Franka loading, FK, IK, gripper
+│   ├── cable.py            cable creation, node read-back, stiffness formulas
+│   ├── teleop.py           joystick → end-effector velocity command
+│   ├── pointcloud.py       load, transform, segment, centerline
+│   └── metrics.py          real-vs-sim distances
+├── scripts/
+│   ├── 01_franka_view.py
+│   ├── 02_teleop.py
+│   ├── 03_teleop_cable.py
+│   └── 04_compare_cloud.py
+├── data/                   real captures (big files: gitignore or use Git LFS)
+└── results/                outputs (gitignored)
 ```
 
-A field left `null` is **measured from the photograph** — deliberately, so the
-length the simulations are scored against comes from the same image, not from a
-tape measure or the packaging.
+One rule from the legacy project worth keeping: **every number that describes
+the physical setup lives in a config file, not in the code.** Then a new cable or
+a new capture means a new YAML file, not an edited script.
 
 ---
 
-## The problem, and why it is exactly solvable
+## Stage 0 — Environment
 
-A cable of length `L` hangs from `N ∈ {2,3}` supports, **all at height `H`**,
-across a span `S`:
+### Newton on macOS: what to expect
 
-```
-   ●─────╮             ╭────●        all at z = H
-          ╰───────────╯
-```
+- Newton is built on **NVIDIA Warp**. On macOS (Apple Silicon or Intel), Warp
+  runs **on the CPU only**: there's no CUDA, and Metal isn't a Warp backend. Everything
+  works, but it's slower.
+- Practical consequence: **develop on the Mac with a small cable** (30–60
+  segments) and fewer solver iterations. Run the heavy studies (Stage 4 parameter
+  sweeps) on a Linux machine with an NVIDIA GPU if you have one. The same code
+  runs on both. Only the Warp device changes (`cpu` vs `cuda:0`).
+- The legacy code ran Newton **inside Isaac Sim** (`~/isaacsim/python.sh`). You
+  don't need Isaac Sim this time. Plain Newton from pip has its own viewer.
 
-Equal heights make it exactly solvable. A perfectly flexible, inextensible cable
-is a **catenary**, `z(x) = a·cosh((x−x₀)/a) + c`, with `a = H/w` fixed by the
-arc-length constraint. Three equal-height supports give **two independent
-sub-catenaries**. So there is a closed form to measure against, with no fitted
-parameters — and the code integrates the governing ODE `z'' = √(1+z'²)/a` from
-scratch and confirms it reproduces the closed form to `7×10⁻³ µm`.
+### Install
+
+1. Install Python 3.10–3.12 and [`uv`](https://docs.astral.sh/uv/) (or a plain venv).
+2. Install Newton. Use the current command in the Newton README; the PyPI
+   package is `newton-physics`, imported as `newton`. Install the extras for
+   examples/viewer if the README lists them.
+3. Run the bundled examples first, **before writing any code**:
+   - list them (the Newton README shows the `python -m newton.examples ...`
+     command),
+   - run at least one **robot** example (look for `franka` / `panda` /
+     `robot` in the names),
+   - run at least one **cable** example (look for `cable` in the names).
+
+   These examples are the best documentation you have. They show the exact API
+   of *your installed version*. Newton's API is still changing, so method names
+   in this README may drift. When in doubt, trust the examples.
+4. Later stages also need: `pygame` (joystick), `open3d` (point clouds),
+   `scipy`, `numpy`, `matplotlib`, `pyyaml`, and `opencv-python` for hand-eye
+   calibration.
+
+**Done when:** a Franka example and a cable example both open in the viewer on
+your Mac, and you've written down which device (`cpu`) and frame rate you get.
 
 ---
 
-## Methods
+## Stage 1 — Franka in Newton
 
-| key | model | engine | status |
+### 1.1 Empty world
+
+Build the smallest possible scene: a `newton.ModelBuilder`, a ground plane,
+`finalize()`, a solver, a viewer, and the standard loop:
+
+```
+for each frame:
+    for each substep:
+        clear forces → solver.step(state_in, state_out, control, contacts, dt) → swap states
+    viewer.log_state(state) / render
+```
+
+Learn the four objects you'll use everywhere: **Model** (static description),
+**State** (positions/velocities, you keep two and swap them), **Control**
+(joint targets, forces), **Contacts**.
+
+### 1.2 Load the Franka
+
+- Get a Franka description. Either:
+  - the URDF/MJCF Newton's own Franka example uses (it downloads assets with a
+    helper in `newton.utils`; copy that approach), or
+  - MuJoCo Menagerie's `franka_emika_panda` (MJCF).
+- Load it with the builder's URDF/MJCF importer. **Fix the base** to the world
+  (no floating base).
+- Set a sensible **home configuration** for the 7 arm joints (the classic
+  "ready" pose is about `[0, -0.785, 0, -2.356, 0, 1.571, 0.785]` rad) and the
+  2 finger joints.
+- Find and store the **index of the hand body** (`panda_hand` or the TCP frame).
+  You'll need it in every later stage. Print all body names once and pick it.
+
+### 1.3 Choose how the robot is driven
+
+You have two options. Pick one consciously:
+
+| option | how | pros | cons |
 |---|---|---|---|
-| `newton_cable` | Newton Cosserat rod (`add_rod` + VBD). Middle support a **point pin** → kinks. | Newton (Warp) | ✅ most accurate vs math |
-| `newton_cable_tape` | Same solver, middle support a **flat tape** → rounds the top like the real cable. | Newton (Warp) | ✅ best real-match among Newton |
-| `physx_capsule` | PhysX rigid capsule chain, D6 joints + bending springs. | Isaac Sim (PhysX) | ✅ best real-match overall |
-| `warp_rod` | XPBD elastic rod in pure Warp. True position-only pin. | Warp only | ✅ needs a bending length |
-| `newton_engine` | Newton via USD articulation. | Isaac Sim | ❌ USD can't hold both ends |
-| `physx_fem` | PhysX volumetric deformable. | Isaac Sim (PhysX) | ⚠️ no state readback on this build |
+| **A. Kinematic** (recommended first) | You write `joint_q` directly every frame and run forward kinematics (`newton.eval_fk` or equivalent). The robot isn't simulated. | Perfect tracking, no gains to tune, any solver works for the cable. | The robot can't be pushed by anything. That's fine here: a real Franka under position control isn't moved by a light cable either. |
+| **B. Dynamic** | Joint PD targets (`joint_target_ke / kd`) solved by e.g. `SolverMuJoCo` or `SolverFeatherstone`. | Realistic dynamics. | Gain tuning. Coupling a dynamic robot and a VBD cable in one step is harder (see Stage 3). |
 
-The middle support **dominates** the 3-support result and is a modelling choice,
-not solver quality:
+For this project the robot is a **precise positioning device**, so **option A is
+the right default**. Use option B only if you later need contact forces or arm
+dynamics.
 
-- **point pin** — two catenaries meet at opposite slopes → an unavoidable
-  upward **kink**. Nearest the math.
-- **tape** (`newton_cable_tape`) — a short flat plateau, so the cable leaves
-  horizontally and bending **rounds** the top, as a strip of tape does. Nearest
-  the photo among Newton runs.
-- **true pin** (Warp) — position held, both tangents free; bending rounds it
-  smoothly. Newton's `add_rod` cannot express this (it holds bodies, hence
-  orientation), which is why the tape model exists.
+### 1.4 Inverse kinematics (IK)
 
----
+You need "put the hand at pose X" rather than "set joint angles". Either:
 
-## Other ways to run
+- use Newton's IK module (`newton.ik`, check your version and its example), or
+- **write your own damped-least-squares IK**. It's short, and you'll understand it fully:
+  - error `e` = 6-vector (position error, orientation error as axis-angle),
+  - Jacobian `J` (6×7): from Newton, or by finite differences of FK (fine at
+    this size),
+  - update `Δq = Jᵀ (J Jᵀ + λ² I)⁻¹ e`, with `λ ≈ 0.05`,
+  - clamp to joint limits, iterate a few times per frame,
+  - optional: use the 7th DOF (null space) to stay near the home pose.
 
-```bash
-# direct CLI, no config file (older driver) — 2 supports, all methods
-python3 run_benchmark.py --points 2
-
-# one method standalone, with a GUI viewport
-~/isaacsim/python.sh methods/hang_newton_cable.py \
-    --length 0.9 --span 0.35 --points 3 --mid-support tape --gui
-
-# hyperparameter sweep (substeps x iterations, damping) + its report
-~/isaacsim/python.sh run_sweep.py --out results/sweep
-python3 analysis/sweep_report.py --sweep results/sweep
-
-# measure a cable from a photo only (no simulation)
-~/isaacsim/python.sh image_utils/measure_length.py \
-    --image images/three_point.jpg --supports 0 0.15 0.35 \
-    --figure detection.png --profile-csv real.csv
-```
+**Done when:**
+- [ ] The Franka stands in its home pose in the viewer, with a fixed base, not falling.
+- [ ] You can print the hand pose (position + quaternion) in the world frame.
+- [ ] Changing a target position in the code moves the hand there, and FK of the
+      IK solution agrees with the target to < 1 mm.
+- [ ] Opening/closing the gripper fingers works.
 
 ---
 
-## Outputs
+## Stage 2 — Joystick control on macOS
 
-```
-results/<run>/
-  config.resolved.yaml   the experiment as run, measurements filled in
-  provenance.json        which inputs were measured vs assumed
-  run.json               the shared scenario handed to every solver
-  real_profile.csv       the cable extracted from the photo
-  detection.png          CHECK THIS — segmentation + fitted profile
-  metrics.csv            THE comparison table, one row per method
-  overlay.png            every method + catenary + photo on one axis
-  errors.png             height error vs x
-  warp_bend.png          Warp bending-stiffness sensitivity
-  report.tex / report.pdf
-  <method>/profile.csv, meta.json, ...
-```
+### 2.1 Hardware and reading the device
 
-`metrics.csv` key columns: `rmse_mm` (vs the analytic catenary),
-`rmse_vs_real_mm` (vs the photo), `arc_drift_pct` (reference-free: an
-inextensible cable must keep its length), `settled`, `wall_s`.
+- **Gamepad** (Xbox / PS4 / PS5 over Bluetooth or USB): read it with
+  **`pygame.joystick`** (SDL2 underneath, works well on macOS). Print axes and
+  buttons first, because the axis numbering differs between controllers. Write the
+  mapping into `configs/robot.yaml`, not the code.
+- **3Dconnexion SpaceMouse** (very nice for 6-DOF): `pyspacemouse` +
+  `brew install hidapi`. macOS may ask for **Input Monitoring** permission
+  (System Settings → Privacy & Security) for your terminal/IDE.
+
+### 2.2 macOS-specific traps
+
+- **Window and event handling must run on the main thread** on macOS. Don't
+  put the viewer or pygame in a background thread. Use one loop:
+  `poll joystick → update target → IK → step sim → render`.
+- pygame needs its event queue pumped every frame (`pygame.event.pump()` or
+  `get()`), even if you only read axes. Otherwise values freeze.
+- Initialise only `pygame.joystick` (and `pygame.display` if SDL complains).
+  You don't need a pygame window.
+
+### 2.3 The control law (Cartesian velocity teleop)
+
+Each frame, with `dt = 1/fps`:
+
+1. Read axes → apply a **deadzone** (≈ 0.1) → optionally square them for finer
+   control near zero.
+2. Scale to an end-effector **twist**: linear velocity `v` (e.g. max 0.2 m/s)
+   and angular velocity `ω` (e.g. max 0.8 rad/s).
+3. **Integrate a target pose**: `p_target += v·dt`,
+   `R_target = exp(ω·dt) · R_target`.
+4. **Clamp the target** to a safe workspace box in front of the robot.
+5. IK → joint targets. If the IK error stays large, **don't** move the
+   target further (stops runaway into unreachable space).
+6. Buttons: gripper open/close, "go home", speed toggle, and a **record**
+   button that saves the current joint angles (useful in Stage 4).
+
+Suggested mapping: left stick = x/y, triggers = z, right stick = yaw/pitch,
+bumpers = roll. Decide whether `v` is in the **world/base frame** or the
+**hand frame**. World frame is easier for driving, hand frame is easier for
+aligning the gripper with a cable. Make it a button toggle.
+
+### 2.4 Optional: split machines
+
+If the Mac is too slow for the cable later, run the **sim on a Linux GPU box** and
+keep **only the joystick on the Mac**: send the twist over UDP (a tiny JSON or
+packed-float message at 60 Hz). Design `teleop.py` so it outputs a plain
+`(v, ω, buttons)` tuple. Then a network transport is just another source.
+
+**Done when:**
+- [ ] Moving each stick moves the hand smoothly in the expected direction.
+- [ ] Releasing the sticks stops the hand dead (no drift, deadzone works).
+- [ ] The hand can't leave the workspace box, and singular poses don't explode.
+- [ ] It runs at a steady frame rate on the Mac (measure it and write it down).
 
 ---
 
-## Current results (apple charger cable, 3 supports, 150 segments)
+## Stage 3 — A cable in the Franka hand
 
-`L ≈ 0.893 m` measured from the photo, span `0.35 m`, `L/S = 2.55` (very slack).
+### 3.1 The cable model
 
-| method | vs MATH (catenary) | vs REAL (photo) |
+Use Newton's rod: **`ModelBuilder.add_rod(positions, radius, ..., stretch_stiffness, bend_stiffness, ...)`**.
+It builds a chain of capsule bodies joined by cable joints (a discrete
+Cosserat rod), solved with **`SolverVBD`** (implicit, stable for stiff cables).
+`legacy/methods/hang_newton_cable.py` uses exactly this. Read it for the
+details below.
+
+Things to get right:
+
+- **Stiffness from material properties.** For segment length `l`:
+  `stretch_k = E·A / l`, `bend_k = E·I / l`, with `A = πr²`, `I = πr⁴/4`
+  (see `rod_stiffness` in `legacy/methods/cable_config.py`).
+- **Mass.** Newton computes body mass from shape volume × density. Set
+  `density = cable_mass / (π r² · L)` so the total mass equals the real
+  cable's.
+- **Measure the real cable**: mass (kitchen scale, then mass per metre), outer diameter
+  (calipers), length. `E` (or directly `EI`) is the **one unknown**. It's
+  identified in Stage 4.
+- **Rest shape = initial shape.** The rod's rest curvature is the shape you
+  create it in. Create it **straight** unless you deliberately model the real
+  cable's natural curl.
+- **Segments.** 30–60 on the Mac for teleop, 100–150 for the accuracy study.
+  Check the result doesn't change when you double it.
+- **Solver budget.** The legacy sweep found that accuracy depends on
+  `substeps × iterations`, that VBD needs ≳100 iterations before the cable stops
+  visibly stretching, and that `4 substeps × 200 iterations` was a good
+  default at 150 segments. Damping the stretch constraint *hurt*.
+- **Read back the centreline.** Bodies are capsules. Recover the N+1 nodes from
+  the body transforms (`read_nodes` in the legacy file does this).
+
+### 3.2 Attaching the cable to the gripper (the key design decision)
+
+| option | how | notes |
 |---|---|---|
-| `newton_cable` (point pin) | **0.9 mm** | 75 mm |
-| `newton_cable_tape` | 21 mm | **65 mm** |
-| `physx_capsule` | 74 mm | **33 mm** |
-| `warp_rod` (drape-consistent EI) | 45 mm | 51 mm |
+| **A. Kinematic attachment** (start here) | Make the first 1–2 rod bodies **massless** (zero mass/inertia, as the legacy code does for supports) and **write their pose every substep** = hand pose × fixed grasp offset. Set their velocity consistently (finite difference of pose) so VBD sees a smooth motion. | Pairs perfectly with the kinematic robot (Stage 1, option A). One solver (VBD) handles only the cable. Simple and robust. |
+| **B. Joint to the hand** | A fixed joint between the hand body and the first rod body, everything in one model/solver. | Only if your Newton version's solver handles the robot articulation and the cable joints together. Check the Newton cable examples for a gripper/robot case before attempting. |
+| **C. Real grasp by friction** | Close the fingers on the cable and rely on contact. | Hardest: needs finger-cable contact tuning. Only if slip in the gripper is something you want to study. |
 
-**The central result:** the solver truest to the mathematics (Newton point pin)
-is *furthest* from the real cable, and PhysX is the reverse. That inversion is a
-**boundary-condition** effect — the taped clamps fix the cable's angle, which the
-ideal catenary does not — not a solver ranking. Imposing the real (flat-tape)
-condition moves Newton from 75 → 65 mm toward the photo, confirming it.
+**Grasp offset**: define the TCP point between the fingertips and the cable's
+direction in the hand frame (e.g. cable leaves along the hand's ±y between the
+fingers). Put it in `robot.yaml`. Stage 4 depends on matching this to reality.
 
-Two independent photos of the same cable measure its length to **0.32 mm**
-(0.036 %) of each other — the vision pipeline is trustworthy.
+**Collisions**: turn on cable–ground first. Turn on cable–robot links later
+(so the cable can drape over the hand). Keep self-collision **off** until
+everything else works. It's expensive, and a hanging cable rarely touches
+itself.
 
----
-
-## Two solver sensitivities worth knowing
-
-**Newton budget.** Accuracy is a function of `substeps × iterations`; cost is
-not (each substep has fixed overhead). Fewer substeps with more iterations is
-cheaper at equal accuracy. Damping the stretch constraint is *harmful*; damping
-bending does nothing. Defaults `4 × 200` come from `run_sweep.py`.
-
-**Warp bending stiffness.** Warp is the only method with a true position-only
-pin, so its shape depends on the bending stiffness — the one input not measured
-here. The material stand-in (`ℓ = (EI/w)^{1/3} ≈ 150 mm`) is too stiff: at a
-coarse mesh the slack rod even **buckles** into an arch (a discretisation
-artefact the finer mesh removes; see `analysis/warp_bend_sensitivity.py`). The
-cable's visible ~2 cm rounding scale implies `ℓ ≈ 20 mm`, where it drapes
-correctly. This is read from the rounding, **not** fitted to the catenary.
+**Done when:**
+- [ ] With the arm still, the cable hangs from the gripper and **settles**
+      (kinetic energy → ~0).
+- [ ] **Arc-length drift** < 0.5 % at rest (an inextensible cable must keep
+      its length). This is the reference-free sanity check from the legacy project.
+- [ ] Driving with the joystick, the cable swings and follows the hand without
+      exploding, jittering, or detaching.
+- [ ] The rest shape doesn't change noticeably when you double the segment count.
+- [ ] Laying the cable on the ground works (contact is stable).
 
 ---
 
-## Known limitations on this build (Isaac Sim 6.0)
+## Stage 4 — Real point cloud vs simulation
 
-- **`newton_engine` cannot represent a both-ends-fixed cable.** A Newton USD
-  articulation must be a tree; a cable clamped at both ends is a closed loop.
-  Excluding the second anchor makes the engine silently ignore it. Use
-  `newton_cable`, which drives the same solver through `add_rod`.
-- **`physx_fem` builds and simulates but its state cannot be read back.** The
-  deformable tensor view is created with a `None` backend, so nodal positions
-  cannot be exported on this build. Reading the TetMesh from USD/Fabric is the
-  likely workaround; not yet implemented.
+This is the scientific part. The question is: **"Given the same robot pose and
+the same cable, how far (in mm) is the simulated cable from the real one?"**
 
-Both methods fail fast with this diagnosis rather than producing empty results.
+### 4.1 What you need from each real capture
+
+A point cloud alone isn't enough. For every capture, save:
+
+| item | why |
+|---|---|
+| the point cloud (`.ply` / `.pcd`), with colours if available | the measurement |
+| **robot joint angles `q`** at capture time | FK gives the exact hand pose. That's the boundary condition. |
+| camera **intrinsics** and **extrinsics** `T_base_camera` | to express the cloud in the robot base frame |
+| **free length** of cable from fingertips to tip (tape measure) | the sim must use the same length |
+| where/how the cable sits between the fingers (photo) | the grasp offset and angle |
+| cable mass, diameter | Stage 3 parameters |
+| an RGB photo | for checking segmentation by eye |
+
+Capture **after the cable has stopped swinging** (static equilibrium, which the sim
+can reproduce exactly). Capture **several different poses**, with at least one
+where the cable leaves the gripper **roughly horizontally** (see 4.6).
+
+### 4.2 Putting the cloud in the robot frame
+
+- If the camera is fixed in the room (eye-to-hand): do a **hand-eye
+  calibration**. Put an ArUco/ChArUco board on the gripper, record ~15
+  robot poses + images, and solve with OpenCV
+  (`cv2.calibrateRobotWorldHandEye` or `cv2.calibrateHandEye`).
+- If the camera is on the wrist (eye-in-hand): same idea, the other variant.
+- **Check the calibration**: transform the cloud into the base frame and
+  overlay the Franka's FK link meshes. The real gripper points must sit on the
+  simulated gripper. The offset you see here is a **floor on every error you'll
+  report**. Write it down.
+
+### 4.3 Extracting the cable from the cloud
+
+A pipeline with Open3D, each step saved so you can look at it:
+
+1. Load → transform to the base frame.
+2. **Crop** to a box around the region below/around the gripper.
+3. Remove the **table** (RANSAC plane fit, `segment_plane`) if visible.
+4. Remove the **robot**: drop points within a few mm of the robot link
+   meshes posed at FK(q), or simply crop away the hand.
+5. Optional colour filter if the cable colour is distinctive.
+6. **Statistical outlier removal**, then **DBSCAN** clustering. Keep the
+   cluster closest to the gripper.
+7. Visualise it. This is the equivalent of the legacy `detection.png`, and you
+   should **always look at it**.
+
+### 4.4 From points to a centreline
+
+The camera sees one side of a tube, so the points sit on the **surface**,
+about one radius from the centreline, biased toward the camera. Options:
+
+- **Simple and robust:** compare the sim's *tube surface* to the cloud
+  (point-to-centreline distance minus radius, see 4.5). No centreline
+  extraction needed.
+- **Full centreline** (needed for arc-length comparison and length checks):
+  voxel-downsample → k-NN graph → minimum spanning tree → **longest path**
+  starting from the point nearest the gripper → smoothing spline
+  (`scipy.interpolate.splprep`) → resample at equal arc-length steps → shift
+  each point by `r` away from the camera.
+- **Check:** the extracted length should match the tape-measured free length
+  (within a few %, minus the part hidden by the fingers). If not, the
+  segmentation is wrong, so fix it before comparing anything.
+
+### 4.5 Simulating the same scene
+
+- Set the robot to the recorded `q` (kinematic, no teleop).
+- Create the cable with the **measured free length**, attached at the **same
+  grasp offset/angle**, initially straight and pointing along the grasp
+  direction.
+- Let it **settle** (legacy `SettleMonitor` idea: stop when tip motion stays
+  below ~0.1 mm per 0.1 s; average the last 0.5 s).
+- Read the centreline nodes **in the robot base frame**.
+
+**Don't ICP-align the sim to the cloud.** Both are already in the base frame.
+Aligning them would hide exactly the error you want to measure (and absorb
+calibration and grasp errors invisibly).
+
+### 4.6 Metrics: how big is the difference?
+
+Report all of these in **mm**:
+
+| metric | definition | tells you |
+|---|---|---|
+| **cloud→sim surface distance** | for each real point: distance to the sim centreline − `r`. Report mean, RMS, 95th percentile, max. | overall shape error; robust to occlusion (only uses points you actually saw) |
+| **arc-length error `e(s)`** | `‖c_real(s) − c_sim(s)‖` at equal arc length `s` from the gripper; plot vs `s` | *where* the error is: near the grasp (boundary condition) vs the tip (stiffness / length) |
+| **tip error** | distance between real and sim free ends | single headline number |
+| **Chamfer / Hausdorff** | symmetric average / worst-case set distance | standard for comparing with papers |
+
+Figures to make: the 3D overlay (cloud + sim tube + robot), `e(s)`, and a
+histogram of point distances.
+
+### 4.7 Error budget: is the difference real?
+
+Before blaming the simulator, estimate the measurement noise:
+
+- calibration error (from 4.2, often 2–5 mm),
+- depth-sensor noise (a RealSense-class camera: about 1–2 % of distance),
+- grasp offset/angle uncertainty (rotating the grasp by 5° moves a 0.5 m
+  cable's tip by ~4 cm, so **this is usually the biggest term**),
+- cable length uncertainty.
+
+A good check: perturb each input in simulation by its uncertainty and see how
+much the metrics move. A sim error smaller than this budget means **"agrees within
+measurement accuracy"**, which is a valid and useful result.
+
+### 4.8 Identifying the stiffness (and why the grasp matters)
+
+The legacy study found that **a cable hanging between supports barely depends
+on its stiffness**. The shape is fixed by length and geometry, so a photo
+can't tell a stiff cable from a soft one. **A cable held at one end by a gripper
+is different**: it's a clamped cantilever, and its shape depends on the
+**gravito-bending length** `ℓ = (EI / w)^(1/3)` (`w` = weight per metre)
+compared with its free length:
+
+- gripper pointing the cable **straight down** → it just hangs straight, so the shape
+  says almost nothing about `EI`;
+- cable leaving the gripper **horizontally** → the droop curve is highly
+  sensitive to `EI`, which makes it the best pose for identification.
+
+Procedure:
+1. Sweep `EI` (log scale, e.g. 10⁻⁶ … 10⁻² N·m²) on **one** capture and pick
+   the value that minimises the cloud→sim error.
+2. **Validate** with that `EI` on the **other** captures (different poses),
+   without refitting. Fitting and testing on the same capture proves
+   nothing.
+3. Report both: fit error and validation error.
+
+Other lessons carried over from `legacy/`:
+- **Boundary conditions dominate.** In the old study, how the middle support was
+  modelled changed the error more than which solver was used. Here, the grasp
+  (offset, angle, does the cable slip or twist in the fingers?) plays that
+  role.
+- **Natural curl.** Real cables keep a coiled shape from packaging. A straight
+  rest shape in sim can't reproduce it. If `e(s)` grows steadily along the
+  cable in a curved way, this is a likely cause.
+- **Settle fully.** Under-settled sims look like a stiffness error.
+
+**Done when:**
+- [ ] The calibration overlay (real gripper on sim gripper) has been checked and its error noted.
+- [ ] Segmented cable length matches the tape measurement.
+- [ ] For each capture: overlay figure, `e(s)` plot, and a metrics table.
+- [ ] `EI` fitted on one capture, validated on the others, with the error budget next to it.
 
 ---
 
-## Layout
+## Build order cheat-sheet
 
-```
-run_experiment.py          config-driven driver (measure → math → sim → compare)
-run_benchmark.py           direct-CLI driver (no config file)
-run_sweep.py               hyperparameter sweep
-experiment.py              the config schema (CableSpec/SupportSpec/...)
-experiments/*.yaml         one file per cable — this is what you edit
-methods/
-  catenary.py              analytic solution
-  cable_ode.py             the governing ODE, integrated + verified
-  hang_common.py           scenario, settling, output protocol, tape shape
-  hang_newton_cable.py     Newton rod (point pin / pin / tape middle support)
-  hang_physx_capsule.py    PhysX capsule chain
-  hang_warp.py             Warp XPBD rod (--bend-length)
-  hang_newton_engine.py    Newton via USD  (blocked — see above)
-  hang_physx_fem.py        PhysX deformable (no readback — see above)
-analysis/
-  compare.py               metrics.csv, overlay, errors, report.tex
-  make_thesis_report.py    the full PDF write-up
-  decision_brief.py        2-page "which one do we adopt?" brief
-  warp_bend_sensitivity.py Warp stiffness study
-  sweep_report.py          hyperparameter-sweep report
-image_utils/
-  measure_length.py        photo → length + profile (non-interactive)
-  extract_cable_profile.py full interactive pipeline (SAM, clicked scale)
-results/                   per-run outputs
-```
+1. Newton examples run on the Mac (Franka + cable).
+2. Franka loads, home pose, hand pose printed.
+3. IK reaches a coded target.
+4. Joystick values printed → hand moves with joystick.
+5. Free cable falls and settles (no robot), arc drift < 0.5 %.
+6. Cable attached to a **fixed** point in space.
+7. Cable attached to the hand, robot still.
+8. Cable + joystick.
+9. Point cloud loaded, transformed, overlaid on the FK robot.
+10. Cable segmented + centreline + length check.
+11. Same scene simulated, metrics computed.
+12. `EI` fit + validation + error budget → write-up.
 
-## Requirements
+Commit after each step. Each step is small enough to debug alone.
 
-- **Isaac Sim 6.0+** at `~/isaacsim` (or set `ISAAC_SIM_PATH`). Newton and Warp
-  ship inside it. Run the simulation scripts with `~/isaacsim/python.sh` — the
-  system Python has an incompatible NumPy/matplotlib.
-- `pdflatex` for the PDF reports (the `.tex` is written regardless).
-- `image_utils/extract_cable_profile.py` additionally needs
-  `ultralytics opencv-contrib-python scipy` (the non-interactive
-  `measure_length.py` needs only what Isaac Sim already provides).
-```
+---
+
+## What's in `legacy/` and what's worth reading
+
+| file | worth reading for |
+|---|---|
+| `legacy/methods/hang_newton_cable.py` | `add_rod` usage, clamping bodies by zeroing mass, `read_nodes`, VBD loop, parameter choices |
+| `legacy/methods/cable_config.py` | cable property dataclass, `EI`, `EA`, `ℓ = (EI/w)^(1/3)`, stiffness formulas |
+| `legacy/methods/hang_common.py` | settle detection, arc-length check, output format |
+| `legacy/analysis/compare.py` | metrics table, overlay and error figures |
+| `legacy/image_utils/` | 2-D photo segmentation (the idea carries over to 3-D) |
+| `legacy/docs/` | write-ups: Newton rod vs capsule chain, FEM on thin objects |
+| `legacy/README.md` | the full previous study and its results |
+
+The legacy scripts expect to be run from inside `legacy/` (paths in its configs
+are relative to that folder), with Isaac Sim's Python.
+
+---
+
+## References
+
+- Newton: <https://github.com/newton-physics/newton> (README, `newton/examples/`, docs)
+- NVIDIA Warp: <https://github.com/NVIDIA/warp>
+- MuJoCo Menagerie (Franka model): <https://github.com/google-deepmind/mujoco_menagerie>
+- pygame joystick: <https://www.pygame.org/docs/ref/joystick.html>
+- Open3D: <https://www.open3d.org/docs/>
+- OpenCV hand-eye calibration: `cv2.calibrateHandEye`, `cv2.calibrateRobotWorldHandEye`
+- Damped least-squares IK: S. Buss, *Introduction to Inverse Kinematics with
+  Jacobian Transpose, Pseudoinverse and Damped Least Squares methods* (2004)
+- Discrete elastic rods / Cosserat rods: Bergou et al., *Discrete Elastic Rods* (SIGGRAPH 2008)
