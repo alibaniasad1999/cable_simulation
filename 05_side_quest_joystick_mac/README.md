@@ -1,6 +1,33 @@
-# Part 2 — Driving the Franka with a joystick on macOS
+# Side quest — Driving the Franka with a joystick on macOS
 
-> Study notes. Prerequisite: Part 1 (you can move the hand to a target pose with IK).
+> **Optional.** Not needed for the main goal (Parts 1–4). Do it when Parts 1–3
+> work, for fun or to pose the simulated robot by hand.
+> Prerequisite: Part 1 (IK moves the hand to a target).
+
+## Where it plugs into the reference example
+
+In [`reference/example_franka_cable_ik_pick_place.py`](../reference/example_franka_cable_ik_pick_place.py),
+the hand target comes from **keyframes**: `update_ik_targets()` (`L438–L462`)
+interpolates a table and writes the result into `ik_target_positions`,
+`ik_target_rotations` and `finger_pos_buf`. The joystick simply **replaces that
+one function**:
+
+```
+update_ik_targets():                     # called once per frame, before simulate()
+    read joystick → (v, ω, gripper button)
+    target_pos ← target_pos + v·frame_dt          (clamped to a safe box)
+    target_rot ← small rotation(ω·frame_dt) · target_rot
+    finger     ← GRIP_OPEN or GRIP_HOLD from the button
+    write them into the same three arrays
+```
+
+Everything else (IK solve, PD targets, cable, coupling) stays unchanged. On the
+Mac there's no CUDA graph, so `simulate()` runs as plain Python every frame and
+new targets are picked up immediately. (On a GPU with graph capture, the targets
+must be written into the *same* arrays the graph was captured with, which is why
+the example uses a kernel to fill them in place.)
+
+The sections below explain each piece.
 
 ## What you'll be able to do at the end
 
@@ -177,7 +204,7 @@ from IK problems.
 button, workspace box, gripper button, home button, world/hand frame toggle.
 
 **Task 2.5 — Record button.** Pressing a button saves the current joint angles
-and hand pose to a file. You'll use this in Part 4 to reproduce real poses.
+and hand pose to a file. Handy for reproducing poses later (Part 4).
 
 *Done when:* the hand moves smoothly in the expected direction, stops dead when
 you release, can't leave the box, never jumps between elbow configurations, and

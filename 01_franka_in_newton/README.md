@@ -1,271 +1,340 @@
-# Part 1 — The Franka robot in Newton
+# Part 1 — The Franka alone in Newton
 
-> Study notes. Read the **Concepts** first, then do the **Tasks** in order, then
-> try the **Exercises**. Answer the **Self-check** questions without looking
-> back. If you can't, re-read that concept before moving to Part 2.
-
-## What you'll be able to do at the end
-
-- Explain how a physics engine advances time, and what Newton's `Model`,
-  `State`, `Control` and solver each do.
-- Load a robot from a URDF/MJCF file and know what is inside that file.
-- Work fluently with poses: positions, quaternions, homogeneous transforms, frames.
-- Compute forward kinematics (FK) and write your own inverse kinematics (IK).
-- Choose between kinematic and dynamic robot control, and justify the choice.
+> **Goal of this part:** a scene with a floor and a Franka FR3 that you move to
+> any hand pose with Newton's IK. No cable yet.
+>
+> Reference: [`reference/example_franka_cable_ik_pick_place.py`](../reference/example_franka_cable_ik_pick_place.py).
+> Line numbers below (`L144`) point into that file. Read the lines, understand
+> them, then write your own version from memory.
+>
+> Newton's API changes between releases. If a name here doesn't exist in your
+> version, look at the same example inside your installed Newton
+> (`python -m newton.examples franka_cable_ik_pick_place`) and its source.
 
 ---
 
-## Concepts
+## 1.0 Run the original first
 
-### 1. What a physics engine actually does
-
-A simulator stores the **state** of the world (positions `x`, velocities `v`) and
-repeatedly computes the state a small time `Δt` later:
-
-```
-v(t+Δt) = v(t) + Δt · M⁻¹ · f(x, v)        (forces → accelerations)
-x(t+Δt) = x(t) + Δt · v(t+Δt)              (velocities → positions)
+```bash
+python -m newton.examples franka_cable_ik_pick_place            # full example
+python -m newton.examples franka_cable_ik_pick_place --help     # all options
 ```
 
-This is *semi-implicit (symplectic) Euler*, the simplest stable-ish scheme.
-Real solvers are more sophisticated, but every one of them is "state in → state
-out, one `Δt` at a time".
+On a Mac, Warp runs on the **CPU**, and CUDA graph capture is skipped
+automatically (`L111`: `use_graph and device.is_cuda`). If it's very slow, try
+fewer substeps (`--substeps`), or run it on a Linux/NVIDIA machine.
 
-Two numbers control everything:
+> Check that `SolverMuJoCo` works on your Mac (it needs the `mujoco` /
+> `mujoco_warp` packages). If it doesn't, use the **kinematic robot**
+> variant (§1.7). It needs no robot solver at all.
 
-- **frame rate**: how often you *look* at the simulation (render, read the
-  joystick), typically 60 Hz;
-- **substeps**: how many physics steps per frame. `Δt = (1/60) / substeps`.
+---
 
-Stiff things (a steel-like cable, a robot with high gains) need a small `Δt` or
-an implicit solver. An explicit spring of stiffness `k` on a mass `m` is stable
-only if roughly `Δt < 2/ω` with `ω = √(k/m)`. Remember this. It explains a lot
-of "my simulation exploded" moments in Part 3.
+## 1.1 The skeleton every Newton example uses
 
-### 2. Newton's architecture
+Every Newton example is a class with three jobs, plus a small `main`:
 
-Newton is written on top of **NVIDIA Warp**. Warp compiles Python functions
-("kernels") to fast code for the CPU or an NVIDIA GPU. On a Mac, Warp runs on the
-**CPU only**. Newton's objects:
+```
+class Example:
+    __init__(viewer, args)   build model → solver → states → control → contacts
+    step()                   advance one frame (= several substeps)
+    render()                 viewer.begin_frame(t); viewer.log_state(...); viewer.end_frame()
 
-| object | what it is | changes during simulation? |
+main:
+    parser = Example.create_parser()          # newton.examples.create_parser() + your args
+    viewer, args = newton.examples.init(parser)
+    newton.examples.run(Example(viewer, args), args)
+```
+
+See `L95–L138` (`__init__`), `L495` (`step`), `L504` (`render`), `L561` (main).
+Copy this structure exactly. It gives you the viewer, `--device`, frame count
+and headless options for free.
+
+**Time:** `fps = 60`, `frame_dt = 1/60`, `sim_dt = frame_dt / substeps`
+(`L99–L102`). One `step()` = `substeps` physics steps.
+
+**The substep loop** (`L487–L493`). Learn its shape by heart:
+
+```
+for _ in range(substeps):
+    state_0.clear_forces()
+    collision_pipeline.collide(state_0, contacts)
+    solver.step(state_0, state_1, control, contacts, sim_dt)
+    state_0, state_1 = state_1, state_0          # swap: output becomes next input
+```
+
+The objects:
+
+| object | made by | holds |
 |---|---|---|
-| `ModelBuilder` | a "construction kit": you add bodies, joints, shapes, robots | — (used before) |
-| `Model` | the frozen description: masses, joint types, shapes, gravity | no |
-| `State` | positions and velocities of bodies/joints (`body_q`, `body_qd`, `joint_q`, `joint_qd`) | yes, every step |
-| `Control` | what you command: joint targets, forces | yes, you write it |
-| `Contacts` | the collision pairs found this step | yes |
-| `Solver*` | the algorithm that maps `State_in → State_out` | — |
+| `builder` | `newton.ModelBuilder(gravity=(0,0,-9.81))` | everything you add, before `finalize()` |
+| `model` | `builder.finalize()` | frozen description (masses, joints, shapes) |
+| `state_0`, `state_1` | `model.state()` | positions/velocities: `body_q`, `body_qd`, `joint_q`, `joint_qd` |
+| `control` | `model.control()` | your commands, e.g. `control.joint_target_q` |
+| `contacts` | `collision_pipeline.contacts()` | contact points found this substep |
 
-You keep **two** states and swap them each substep (the solver reads one, writes
-the other). This "double buffering" avoids overwriting data that is still being
-read.
+Z is up (`gravity=(0, 0, -9.81)`). Units: metres, kg, seconds, radians.
 
-Newton ships several solvers with different strengths. Examples are
-`SolverMuJoCo` (robots, contacts), `SolverFeatherstone` (articulations in joint
-coordinates), `SolverXPBD`, and `SolverVBD` (deformables and cables, Part 3).
-Learning **which solver suits which problem** is part of this course.
+---
 
-> Newton's API is young and changes between versions. The examples that ship
-> with *your installed version* are the ground truth for exact names. Run the
-> example list, open the source of a robot example, and read it like a textbook.
+## 1.2 Add the floor
 
-### 3. Poses, frames and transforms
+`L183–L192`:
 
-A **pose** = position `p ∈ ℝ³` + orientation. Orientation can be written as:
-
-- a **rotation matrix** `R` (3×3, orthonormal, det = +1), easiest for math;
-- a **quaternion** `q = (x, y, z, w)` with `|q| = 1`, compact, no singularities,
-  what Newton/Warp store;
-- **axis-angle** `θ·n̂`, best for *errors* and *small rotations*;
-- Euler angles: avoid them except for printing.
-
-**Homogeneous transform** — pack `R` and `p` in a 4×4 matrix:
-
-```
-        ┌ R  p ┐
-T_A_B = │      │      maps a point written in frame B into frame A
-        └ 0  1 ┘
-
-T_A_C = T_A_B · T_B_C              (chain frames — read the subscripts like dominoes)
-T_B_A = T_A_B⁻¹ = [Rᵀ, −Rᵀp; 0, 1]
+```python
+plane_cfg = newton.ModelBuilder.ShapeConfig(ke=1e3, kd=1e-1, mu=1.0, margin=0.0, gap=0.01)
+builder.add_ground_plane(height=surface_z, cfg=plane_cfg, label="cable_ground_plane")
 ```
 
-Adopt a naming convention now and never break it: `T_world_hand`,
-`T_base_camera`, `T_hand_grasp`. Half of all robotics bugs are a transform used
-in the wrong direction. The subscript rule makes those bugs visible.
-
-**Frames you will meet:** `world`, `base` (robot base, here = world), each
-`link`, `hand` (the flange/gripper body), `TCP` (tool centre point, between the
-fingertips), and in Part 4 `camera` and `cloud`.
-
-### 4. Articulated robots
-
-An **articulation** is a tree of rigid **links** connected by **joints**.
-Each joint has degrees of freedom (DOF). Revolute = 1 rotation, prismatic = 1
-translation, fixed = 0.
-
-The Franka Emika Panda:
-- 7 revolute arm joints (it's *redundant*: 7 DOF for a 6-DOF task, so infinitely
-  many joint configurations reach the same hand pose),
-- 2 prismatic finger joints (each 0 to 0.04 m),
-- joint limits from the datasheet (rad, approximately):
-  `q1 ±2.90, q2 ±1.76, q3 ±2.90, q4 [−3.07, −0.07], q5 ±2.90, q6 [−0.02, 3.75], q7 ±2.90`.
-  Note that `q4` is **never** zero or positive, because the elbow is always bent.
-
-**Two ways to describe the same robot:**
-- *maximal coordinates*: each link has a full 6-DOF pose (`body_q`) and joints
-  are constraints between them;
-- *generalised (reduced) coordinates*: only the joint angles (`joint_q`). The
-  link poses follow from FK.
-
-Newton stores both. Know which one your solver integrates.
-
-**URDF vs MJCF**: both are XML robot descriptions. They contain links (with
-mass, centre of mass, inertia tensor, visual mesh, collision mesh) and joints
-(type, axis, parent/child, origin transform, limits). Open the Franka file in a
-text editor and find: the `panda_joint4` limits, the `panda_hand` link, and the
-finger joints. Reading it once teaches you more than any summary.
-
-### 5. Forward kinematics (FK)
-
-FK = "given joint angles `q`, where is every link?". It's just a chain of
-transforms from the base:
-
-```
-T_base_hand(q) = T_0(q1) · T_1(q2) · … · T_6(q7) · T_flange_hand
-```
-
-where each `T_i` = (fixed origin transform from the URDF) × (rotation about the
-joint axis by `qi`). Newton computes this for you (`eval_fk` or similar). In
-Exercise 1 you implement it yourself once, to understand it.
-
-### 6. The Jacobian
-
-The Jacobian `J(q)` (6×7 for the Panda) maps joint velocities to the hand's
-**twist** (linear velocity `v` and angular velocity `ω`):
-
-```
-┌ v ┐
-│   │ = J(q) · q̇
-└ ω ┘
-```
-
-Column `i` = "how the hand moves if only joint `i` moves". You can get it by
-**finite differences** of FK (perturb each `qi` by `ε ≈ 1e-6`, measure the pose
-change). That's slow in theory, but at 7 joints it's perfectly fine and very
-educational.
-
-A pose is **singular** where `J` loses rank. Some hand direction then needs
-infinite joint speed. Measure "how far from singular" with the *manipulability*
-`w = √det(J Jᵀ)`.
-
-### 7. Inverse kinematics (IK)
-
-IK = "which `q` puts the hand at a target pose?". For a general robot there is
-no closed form, so you **iterate** (Newton–Raphson on the pose error):
-
-1. pose error `e` (6-vector):
-   - position part: `p_target − p_current`
-   - orientation part: the axis-angle vector of `R_target · R_currentᵀ`
-2. step: `Δq = Jᵀ (J Jᵀ + λ² I)⁻¹ · e`  ← **damped least squares**
-3. `q ← clamp(q + Δq, limits)`. Repeat until `|e|` is small.
-
-Why the damping `λ`? Plain pseudoinverse `Jᵀ(JJᵀ)⁻¹` blows up near
-singularities. `λ` trades a little accuracy for stability. Typical
-`λ ≈ 0.01–0.1`.
-
-**Redundancy:** because the Panda has 7 DOF, you can add a secondary goal in the
-**null space** of `J` without disturbing the hand. For example, "stay close to
-the home pose": `Δq += (I − J⁺J) · k·(q_home − q)`. This keeps the elbow from
-wandering.
-
-### 8. Kinematic vs dynamic control
-
-| | kinematic | dynamic (PD) |
+| argument | meaning | how to choose |
 |---|---|---|
-| what you set | `joint_q` directly, then FK | target `q*`; the solver applies torques `τ = kp(q* − q) − kd·q̇` |
-| tracking | perfect | lags, overshoots if gains are wrong |
-| can objects push the robot? | no | yes |
-| good for this project? | **yes**: a real Franka in position control is not pushed around by a light cable | only if you later need contact forces or arm dynamics |
+| `height` | z of the floor/table surface | your table height. The example puts it at `cable_center_z − cable_radius` so the cable starts lying on it. |
+| `ke` | contact stiffness [N/m] | higher = harder floor, less sinking. 1e3 is soft and matched to the cable. |
+| `kd` | contact damping | removes bouncing |
+| `mu` | friction coefficient | 1.0 = grippy (cable doesn't slide away) |
+| `gap` | distance at which contacts are *detected* (before touching) | a few mm to 1 cm. Too small and fast objects tunnel through. |
+| `margin` | extra thickness added to the shape | 0 unless objects sink |
+
+If you want a table *and* a floor, add a box shape for the table
+(`builder.add_shape_box(...)`, check the name in your version) and a ground
+plane at z = 0.
+
+---
+
+## 1.3 Add the Franka
+
+`L143–L155`:
+
+```python
+builder.add_urdf(
+    newton.utils.download_asset("franka_emika_panda") / "urdf/fr3_franka_hand.urdf",
+    xform=wp.transform(wp.vec3(0.0, 0.0, base_z), wp.quat_identity()),
+    floating=False,
+    enable_self_collisions=False,
+    parse_visuals_as_colliders=False,
+    force_show_colliders=False,
+)
+```
+
+| argument | meaning |
+|---|---|
+| `download_asset("franka_emika_panda")` | downloads (once, then cached) Newton's robot asset folder and returns its path. `fr3_franka_hand.urdf` = FR3 arm + Franka hand. Open the folder and look at the files. |
+| `xform` | where the robot **base** goes in the world: position + quaternion. Put the base on your table: `z = table height`. Rotate it with the quaternion if your real robot faces another direction. |
+| `floating=False` | base bolted to the world. **Always** for a mounted arm. Otherwise it falls over. |
+| `enable_self_collisions=False` | links don't collide with each other (faster; adjacent links overlap anyway) |
+| `parse_visuals_as_colliders=False` | use the URDF's simple collision meshes, not the detailed visual ones |
+
+**Order matters:** add the Franka **first** in the builder. Then its joints are
+coordinates `0…8` (7 arm + 2 fingers), its bodies come first, and the IK model
+(§1.5) lines up with it (`L360–L362`). Remember the index ranges before and after
+adding (`L202–L221`):
+
+```python
+franka_body_start = builder.body_count
+... add_urdf ...
+franka_bodies = list(range(franka_body_start, builder.body_count))
+```
+
+Do the same for joints and shapes. You'll need these lists for collisions and
+coupling in Part 3.
+
+**Find bodies by name:** print `builder.body_label` once. The hand is `fr3_hand`
+and the fingers contain `finger` (`L270–L274`, `L373`).
+
+### Initial joint configuration
+
+`L33–L44`, `L154–L155`:
+
+```python
+FRANKA_Q = [q1, ..., q7, finger1, finger2]     # radians, radians..., metres, metres
+builder.joint_q[:9] = FRANKA_Q                  # where the robot starts
+builder.joint_target_q[:9] = FRANKA_Q           # where the PD controllers pull it
+```
+
+Set **both**. If only `joint_q` is set, the controllers pull the robot to zero
+on the first step and it whips around. Fingers: `0.04` = fully open (each
+finger travels 0–0.04 m, so max opening 8 cm), `0.0` = closed.
+
+A good "ready" pose: `[0, -0.785, 0, -2.356, 0, 1.571, 0.785, 0.04, 0.04]`.
+The example's pose (`L34`) has the hand pointing down over the table.
+
+After `finalize()`, compute the body poses from the joints once (`L135–L136`):
+
+```python
+newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+```
+
+Without this, the bodies sit at their default poses until the first step.
+
+---
+
+## 1.4 How the robot is driven: joint PD targets
+
+The example simulates the arm with **`SolverMuJoCo`**. Each joint gets a PD
+controller that pulls it toward `control.joint_target_q`. Settings (`L208–L217`):
+
+```python
+builder.joint_target_ke[:7] = [400.0] * 7    # arm stiffness (P gain)
+builder.joint_target_kd[:7] = [80.0] * 7     # arm damping   (D gain)
+builder.joint_target_ke[7:9] = [1000.0] * 2  # finger stiffness
+builder.joint_target_kd[7:9] = [100.0] * 2
+builder.joint_effort_limit[:4]  = [87.0] * 4   # max torque [N·m], real Franka joints 1-4
+builder.joint_effort_limit[4:7] = [12.0] * 3   # real Franka joints 5-7
+builder.joint_effort_limit[7:9] = [1500.0] * 2 # gripper force limit
+builder.joint_armature[:7] = [1e-3] * 7        # small rotor inertia, stabilises the solver
+```
+
+| knob | effect if too low | effect if too high |
+|---|---|---|
+| `joint_target_ke` | arm lags behind IK, sags | jittery, needs more substeps |
+| `joint_target_kd` | overshoot/oscillation | sluggish |
+| `joint_effort_limit` | can't hold the pose | unrealistic forces |
+
+**Gravity compensation** (`L223–L229`): the real Franka cancels gravity
+internally. In MuJoCo you enable it per body:
+
+```python
+SolverMuJoCo.register_custom_attributes(builder)   # must be called before adding things (L160)
+gravcomp = builder.custom_attributes["mujoco:gravcomp"]
+gravcomp.values = gravcomp.values or {}
+for b in franka_bodies:
+    gravcomp.values[b] = 1.0
+```
+
+With it, the PD gains only track the target and don't fight gravity. Without
+it, the arm droops below the IK target.
+
+**The robot solver** (robot only, for this part):
+
+```python
+solver = SolverMuJoCo(model, solver="newton", integrator="implicitfast",
+                      cone="elliptic", iterations=100, ls_iterations=20)
+```
+
+In Part 3 this same solver becomes one "entry" of the coupled solver. For now
+use it directly.
+
+---
+
+## 1.5 Moving the hand: Newton's IK
+
+You don't set 7 joint angles by hand. You say "hand here, pointing like this"
+and IK finds the joints. `L359–L405`:
+
+**(a) A separate Franka-only model for IK.** Build a second builder with only the
+Franka (same `add_urdf` call, same base pose), and `finalize` it. IK then never
+sees the cable's bodies. Because the Franka was added first in the main model,
+the first `n_coords = ik_model.joint_coord_count` coordinates match.
+
+**(b) Objectives.** IK minimises a sum of objectives:
+
+```python
+hand = index of "fr3_hand" in ik_model.body_label
+
+pos_obj = ik.IKObjectivePosition(
+    link_index=hand,
+    link_offset=wp.vec3(0.0, 0.0, 0.107),      # TCP: 10.7 cm along hand z = between fingertips
+    target_positions=target_pos_array)        # wp.array of wp.vec3, one per world
+
+rot_obj = ik.IKObjectiveRotation(
+    link_index=hand,
+    link_offset_rotation=wp.quat_identity(),
+    target_rotations=target_rot_array)        # wp.array of wp.vec4 (x, y, z, w)
+
+limits_obj = ik.IKObjectiveJointLimit(
+    joint_limit_lower=..., joint_limit_upper=..., weight=10.0)
+
+ik_solver = ik.IKSolver(model=ik_model, n_problems=world_count,
+                        objectives=[pos_obj, rot_obj, limits_obj],
+                        lambda_initial=0.05,
+                        jacobian_mode=ik.IKJacobianType.ANALYTIC)
+```
+
+- **`link_offset = 0.107`** is important: it makes the *point between the
+  fingertips* (the tool centre point, TCP) go to your target, not the hand's
+  flange. When you grasp a cable, the target is where the cable is.
+- **Orientation as a quaternion `(x, y, z, w)`.** `GRIPPER_DOWN = (1, 0, 0, 0)`
+  (`L53`) = 180° about world x, so the hand's z axis points **down**:
+  a top-down grasp. Newton/Warp use `(x, y, z, w)`. MuJoCo, Isaac and many
+  papers use `(w, x, y, z)`. Mixing them is the classic bug.
+- `lambda_initial`: damping of the IK step (stability near singular poses).
+
+**(c) Each frame: solve → copy into the PD targets** (`L478–L485`):
+
+```python
+ik_solver.step(ik_joint_q, ik_joint_q, iterations=24)   # in-place, warm-started
+# put finger widths into the last two coords (kernel set_gripper_q, L67)
+wp.copy(dest=control_joint_target_q[:, :n_coords], src=ik_joint_q)
+```
+
+`ik_joint_q` keeps the last solution, so each solve starts from the previous
+one (*warm start*). It converges fast and the elbow doesn't flip.
+
+**(d) Changing the target.** Write new values into `target_pos_array` /
+`target_rot_array` before `simulate()`. The example does it with a tiny Warp
+kernel (`set_task_targets`, `L73`). From plain Python you can also do
+`arr.assign(...)` or create the array from numpy. That's fine on the CPU.
+
+---
+
+## 1.6 Scripting motion: keyframes
+
+`L410–L462`: a table of `[duration, x, y, z, qx, qy, qz, qw, finger]` rows, and
+`update_ik_targets()` linearly interpolates between rows by time. This is how
+the example does approach → descend → grasp → lift → move → release.
+
+For your project, keyframes are the simplest way to **reproduce a real robot
+pose**: one row "go to the recorded hand pose and stay". The joystick (Part 5)
+just replaces this function with "target += stick velocity × dt".
+
+> Linear interpolation of a quaternion's 4 numbers is only OK for small
+> rotation changes (the example keeps the orientation constant). For big
+> rotations, use spherical interpolation (slerp) and renormalise.
+
+---
+
+## 1.7 Alternative: a kinematic robot (no robot physics)
+
+If you only need the robot to **be at a pose** (Part 4: reproduce the real
+capture), you don't need MuJoCo at all:
+
+1. solve IK (or use the real recorded joint angles directly),
+2. write them into `state.joint_q`,
+3. `newton.eval_fk(model, state.joint_q, state.joint_qd, state)` → body poses.
+
+The robot then follows exactly, with no gains to tune. The cable (Part 2) is then
+attached to the hand directly instead of being grasped by contact. Part 3
+explains both options.
 
 ---
 
 ## Tasks
 
-Write your code in this folder (`01_franka_in_newton/`).
+Write your code in this folder, **without copying**. Look at the reference only when stuck.
 
-**Task 1.1 — Run the examples.** Install Newton (package `newton-physics`,
-import `newton`). List the bundled examples and run one robot example and one
-cable example. Write down the frame rate you get on your Mac. *You should see:*
-a viewer window with a moving robot.
+1. **Skeleton + floor.** Example class, empty builder, ground plane, a falling box.
+2. **Franka.** `add_urdf`, fixed base on the floor, initial `joint_q` and
+   `joint_target_q`, `eval_fk`. Print all body labels and the joint count.
+3. **Hold the pose.** `SolverMuJoCo` + PD gains + gravity compensation. The robot
+   must stand still for 10 s. Then try turning gravcomp off and see the sag.
+4. **IK to one target.** Separate IK model, three objectives, TCP offset. Send the
+   TCP 10 cm forward, hand down. Print the TCP position from FK and check it's
+   within 1–2 mm.
+5. **Keyframes.** Approach → down → close fingers → up. No cable yet.
+6. **Kinematic variant.** Same keyframes, without MuJoCo (§1.7).
 
-**Task 1.2 — Empty world.** Builder → ground plane → finalize → solver → viewer
-→ loop with substeps and state swapping. Drop one box from 1 m and check it
-lands. *You should see:* the box falls and rests on the ground.
+## Check yourself
 
-**Task 1.3 — Load the Franka.** Import the URDF/MJCF (copy how the Newton robot
-example obtains its Franka asset), fix the base, set the home pose
-`[0, −0.785, 0, −2.356, 0, 1.571, 0.785]` + fingers open. Print every body name
-and its index. Store the index of the hand body. *You should see:* the robot
-standing still in the "ready" pose.
-
-**Task 1.4 — Read the hand pose.** After FK, print `T_world_hand` (position +
-quaternion). Move one joint by hand in the code and check the hand moves the way
-you expect.
-
-**Task 1.5 — Your own IK.** Implement damped-least-squares IK with a
-finite-difference Jacobian. Give it a target 10 cm in front of the current hand
-position. *Done when:* FK of the IK result is within 1 mm / 0.5° of the target.
-
-**Task 1.6 — Gripper.** Open and close the fingers (prismatic joints 0 → 0.04 m).
-
----
-
-## Exercises
-
-1. **FK by hand.** Using only the joint origins and axes from the URDF (no Newton
-   FK), compute `T_base_hand` for the home pose with numpy. Compare with Newton.
-   They must agree to ~1e-6 m. If not, you have a transform order bug, and finding
-   it will teach you more than the rest of this part.
-2. **Damping study.** Run IK from the same start to the same target for
-   `λ = 0.001, 0.01, 0.1, 1`. Plot error vs iteration. What does `λ` trade off?
-3. **Singularity hunt.** Move the hand along a straight line that stretches the
-   arm fully forward. Plot manipulability `w` along the path. What happens to
-   `|Δq|` as `w → 0`, with and without damping?
-4. **Null space.** Reach the same hand target twice: once with the null-space term,
-   once without. Compare the final elbow positions.
-5. **Quaternion drill.** Convert a quaternion to a rotation matrix by the formula
-   (no library), compose two rotations both ways, and verify `q` and `−q` give the
-   same rotation.
-
-## Self-check
-
-- Why do we keep two `State` objects?
-- What's the difference between `body_q` and `joint_q`?
-- Write `T_camera_hand` in terms of `T_world_camera` and `T_world_hand`.
-- Why is the Panda "redundant", and what does that let IK do?
-- What is the orientation part of the IK error, and why not just subtract Euler angles?
-- Why is kinematic control acceptable for a robot holding a light cable?
+- Why must the Franka be the first thing added to the builder?
+- What happens if you set `joint_q` but not `joint_target_q`?
+- What does `link_offset=(0, 0, 0.107)` change?
+- Write the quaternion for "hand pointing down" in `(x, y, z, w)`, and in `(w, x, y, z)`.
+- When would you choose the kinematic robot over MuJoCo?
 
 ## Common mistakes
 
-- **Quaternion order.** Newton/Warp and SciPy use `(x, y, z, w)`. MuJoCo, Isaac
-  Sim and many papers use `(w, x, y, z)`. Mixing them gives a rotation that
-  *looks almost right*. Always test with a 90° rotation about one axis.
-- **Up axis.** Check whether your world is Z-up (Newton's usual default) or Y-up,
-  especially when importing assets.
-- **Units.** Metres, kilograms, seconds, radians, everywhere, always.
-- **Forgetting to fix the base.** The robot falls over or flies away.
-- **Joint limits ignored in IK.** The solution "works" but is impossible on the
-  real robot (remember `q4 < 0`).
-- **Reading state before FK was evaluated.** You print the old pose.
-
-## Further reading
-
-- K. Lynch & F. Park, *Modern Robotics* (free PDF + videos). Chapters 3 (rigid
-  motions), 4 (FK), 5 (Jacobian), 6 (IK). The best single reference for this part.
-- S. Buss, *Introduction to Inverse Kinematics with Jacobian Transpose,
-  Pseudoinverse and Damped Least Squares Methods* (2004).
-- Newton repository: README, `newton/examples/` source.
-- Franka Emika Panda datasheet: joint limits, velocity limits.
+- `floating=True` (or forgetting it): the robot falls over.
+- Forgetting `register_custom_attributes` **before** adding the robot, so `gravcomp` is missing.
+- Quaternion order mixed up.
+- IK target given for the hand flange instead of the TCP: the fingers end up 10.7 cm off.
+- Forgetting `eval_fk` after `finalize()`.
