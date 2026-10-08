@@ -18,9 +18,9 @@ the model were perfect, nothing would move. **How far it moves is the
 disagreement, and the stiffness that moves it least is the cable's stiffness.**
 
 Newton version used for every number below: `newton 1.6.1`, `warp-lang 1.18.0`,
-CPU. Work in **metres** (the tube fit's CSV is in metres). The checks on the test
-scan use **`EI = 1e-3`, `GJ = 7.7e-4`**: put those in your test JSON (the Ethernet
-JSON now starts from 5e-3).
+CPU. Work in **metres** (the tube fit's CSV is in metres). Every check uses the
+reference JSON as committed (`EI = 5e-3`, `EA = 200`, `kGA = 20`, 20 substeps ×
+20 iterations, plug end fixed), pointed at the test scan of Stage 0.
 
 ---
 
@@ -39,8 +39,17 @@ hanging   t ∈ [0, 1], 200 points:
           z = max( 0.35 − 0.35 (1 − (1 − t)²) + r t ,  r )
 lying     x from 0.57 to 0.72, y = 0, z = r, 400 points (drop the first, it repeats)
 loop      θ from −π/2 to 1.5π + 0.6, 400 points:
-          x = 0.72 + 0.07 cos θ,   y = 0.07 + 0.07 sin θ,   z = r
+          x = 0.72 + 0.07 cos θ,   y = 0.07 + 0.07 sin θ,
+          z = r + 2r·lift(θ)      the second pass CROSSES OVER the first:
+          lift rises linearly 0 → 1 over θ ∈ [1.5π − 0.45, 1.5π],
+          then falls 1 → 0 over θ ∈ [1.5π, 1.5π + 0.5]
 ```
+
+Why the lift: where a real cable crosses itself, one strand **lies on** the other
+(centres one diameter apart). My first test scan let the strands pass *through*
+each other at the same height. Self-contact then fought that overlap forever, and
+the simulation never settled. Physically impossible input gives nonsense, so build
+your test data as carefully as your code.
 
 Stack the three parts, resample to **151 nodes at equal arc length**, and write:
 
@@ -48,8 +57,9 @@ Stack the three parts, resample to **151 nodes at equal arc length**, and write:
   (tangents from `np.gradient`, normalised; `supported` all 1),
 - `summary.json` with `{"radius_mm": 3.6, "ply_units": "mm"}`.
 
-**Check:** length 1019.5 mm, 151 nodes. Plotted from the top, a straight line
-from the gripper into a loop of 70 mm radius.
+**Check:** length 1020.9 mm along the 151 nodes. Plotted from the top, a straight
+line from the gripper into a loop of 70 mm radius, the loop crossing over its start
+6.8 mm higher.
 
 ---
 
@@ -100,29 +110,40 @@ the table becomes a tall vertical loop, the gripper end lands at table height, a
 the robot is pushed into the table. That really happened with your Ethernet scan.
 
 Measure "up" from the cable itself. Like the tube fit measuring the radius, this
-never looks at the simulation:
+never looks at the simulation. The idea: **the table is the plane that the most
+cable rests on, with all of the cable above it.** With the true up, every node lying
+on the table sits at exactly the same, lowest height. Tilt the direction even a
+little and only a few stay at the bottom.
 
-1. **The cable never climbs back up.** Hanging from the gripper and lying on the
-   table, its height only goes *down* along the cable (except a few mm where one
-   strand crosses another). For a direction `d`, walk from the higher end and add
-   up every increase in height `X·d`:
+1. **Coarse:** for ~20 000 directions spread over the sphere (Fibonacci sphere),
+   count the nodes within **3 mm** of the lowest node. Keep only directions where
+   the cable hangs at least 5 cm above that and an **end** is the highest point (the
+   gripper). Take the directions with (nearly) the most nodes at the bottom.
+   Tie-break: the cable should never climb back up once it leaves the gripper, so
+   prefer the direction with the least climb:
 
    ```
    rise(d) = Σ max(0, h[k+1] − h[k]),   h = X·d, walked from the higher end
    ```
 
-   Evaluate it for ~20 000 directions spread over the sphere (Fibonacci sphere),
-   take the smallest, then refine within ±2.5° at 0.2° steps. Vectorise:
-   `H = X @ D.T` is (nodes × directions).
-2. **Up or down?** `d` and `−d` score the same: a cable "hanging upward" from the
-   floor is monotone too. The table tells them apart: the stretch lying on it is
-   **many nodes at the same, lowest height**, while the gripper is a single high
-   point. Count nodes within 5 mm of the bottom and of the top, and flip `d` if the
-   top has more.
-3. **Polish with the table plane:** fit a plane (SVD) through the nodes within 5 mm
-   of the bottom, keep only those within 1 mm of it, and fit again (this drops the
-   nodes where the cable lifts off the table). Use the plane's normal if the nodes
-   spread in two directions (a straight line has no plane) and it's within 5° of `d`.
+   Vectorise: `H = X @ D.T` is (nodes × directions).
+2. **Fine:** within 6° of that, on a 0.1° grid, count nodes within **0.5 mm** of the
+   bottom. 3 mm is too loose for a stiff cable whose loop arches off the table: a
+   slightly tilted plane can graze more of the arch than the real table.
+3. **Polish:** fit a plane (SVD) through the resting nodes, keep only those within
+   1 mm, fit again. Use its normal if the nodes span an **area** (second singular
+   value > 0.2 × first) and it's within 5° of the estimate.
+
+Up or down comes out for free: with `−up` the "bottom" is the gripper end, a single
+node, so it never wins step 1. (My first version scored only the climb. A cable
+"hanging upward" from the floor is monotone too, so the −y-up case came out exactly
+180° wrong.)
+
+**The limit:** if the cable rests on the table along a **line only** (a stiff loop
+arching up, touching down in one straight stretch), the tilt *about that line* is
+not determined by the cable: it can be off by a degree or two. Detect that case
+(the resting nodes' second singular value is small) and say so. The real fix is
+the table itself, e.g. its normal from the scan in CloudCompare, given as `scan.up`.
 
 Then build the rotation that takes `up` to `+z` (Rodrigues:
 `R = I + K + K²/(1 + up·z)`, `K` = cross-product matrix of `up × z`; for `up = −z`
@@ -131,9 +152,9 @@ use a half turn about x). Keep `R` in `meta.json` so the comparison and the
 
 **Check:** take the test scan, turn it into several frames yourself (y-up, a
 camera's −y-up, tilted 10° and 25°, a few random rotations, plus an offset). The
-detected up must match the true one to ~0.01°, and the turned scan must have a
-height span of 346 mm every time. Before the plane polish you'll see ~0.14°.
-Without step 2, the −y-up case comes out exactly 180° wrong.
+detected up must match the true one to ~0.01° in every frame. Then try a settled
+**stiff** cable (Stage 12's truth): it touches the table along a line, and you'll
+get ~1.4° and the line NOTE. That's the limit above, not a bug.
 
 ---
 
@@ -161,9 +182,15 @@ plug   = n_seg·h − grip − L_scan             (≈ plug_len, within h/2)
 n_plug = round(plug / h)
 ```
 
-**End directions.** One segment's direction is noisy. Average over ~2 cm:
-`t₀ = unit(X[k] − X[0])` with `k` the first node past 2 cm, and the same at the
-plug end (`t₁`).
+**End directions.** Use the tube fit's own tangents: `tx, ty, tz` of the first and
+last node (turned with `R`, and negated if you reversed the cable). They come from
+its spline, so they're exact. Only if a CSV has no tangents, average over ~2 cm:
+`t₀ = unit(X[k] − X[0])`.
+
+This matters more than it looks: the grip direction is the boundary condition.
+1° at the grip moves the hanging part ~6 mm at 35 cm. With the 2 cm average, a
+stiff cable (which curves within those 2 cm) failed the self-test: the true EI
+moved 6.5 mm away from its own equilibrium.
 
 **Starting centreline** (`init = "scan"`): a dense polyline
 
@@ -175,7 +202,7 @@ resampled to `n_seg + 1` points at equal arc length (`np.interp` on cumulative
 length, per coordinate).
 
 **Check (test scan):** `h = 10.0` mm, 108 segments, 2 grip segments, 4 plug
-segments, plug 40.5 mm, total length 1.080 m.
+segments, plug 39.1 mm, total length 1.080 m.
 **Check (your scan):** 95 segments, plug ≈ 37 mm.
 
 ---
@@ -201,9 +228,8 @@ joint and *not* scaled, so they'd change meaning when you change `h`. Prefer
 rigidities.
 
 **Check:** after `add_rod`, look at `builder.joint_target_ke` for the first rod
-joint's 4 DOFs (stretch, shear, bend, twist). With `EI = 1e-3`, `GJ = 7.7e-4`:
-`[2.0e6, 7.0e5, 0.1, 0.077]`, i.e. `EA/h, kGA/h, EI/h, GJ/h` (with the Ethernet
-JSON's 5e-3 the bend entry is 0.5).
+joint's 4 DOFs (stretch, shear, bend, twist). With the reference JSON:
+`[2.0e4, 2.0e3, 0.5, 0.385]`, i.e. `EA/h, kGA/h, EI/h, GJ/h`.
 
 ### 4b. Mass: the capsule-cap trap
 
@@ -219,8 +245,9 @@ density   = μ · h / V_capsule          (μ = mass per metre)
 Pass it in `ModelBuilder.ShapeConfig(density=..., ke=..., kd=..., mu=..., margin=0, gap=...)`.
 
 **Check:** sum `model.body_mass` over the free cable bodies (after zeroing the grip,
-4c) = `μ·(L_scan + plug) + plug_mass`. Test scan: 51.7 g. Without the
-correction you'd get 74.6 g.
+4c) = `μ·(L_scan + plug) + plug_mass` with a free plug end: 51.7 g on the test
+scan (74.6 g without the correction). With the plug end fixed (4c), the plug
+segments are kinematic too and the free cable is 45.9 g.
 
 ### 4c. Damping, grip, plug
 
@@ -229,10 +256,14 @@ correction you'd get 74.6 g.
 - **Grip:** the first `n_grip` bodies get zero `body_mass`, `body_inv_mass`,
   `body_inertia`, `body_inv_inertia`. VBD treats `inv_mass = 0` as kinematic and
   never moves them. This is the boundary condition.
-- **Plug:** spread `plug_mass` over the last `n_plug` bodies. For each one,
+- **Plug, free:** spread `plug_mass` over the last `n_plug` bodies. For each one,
   multiply mass **and inertia** by `f = (m + Δm)/m` and set the inverses to match.
   (`builder.body_inertia[b]` is a `wp.mat33`. Go through numpy:
   `np.array(I).reshape(3, 3)`.)
+- **Plug, fixed** (`fix_plug_end`): make the plug bodies zero-mass instead, like
+  the grip. They stay exactly where they start, which is only the scanned place with
+  `init = "scan"`. With `drop`, leave the plug free. Holding the far end stops the
+  lying part from sliding away, so the comparison is about the shape in between.
 
 ### 4d. Table and finalize
 
@@ -244,6 +275,44 @@ model = builder.finalize()
 
 Call `SolverVBD.register_custom_attributes(builder)` right after creating the
 builder, before adding anything.
+
+### 4e. Check that it bends like its EI (the "jelly" trap)
+
+**Don't trust the stiffness you typed: measure it.** Build a separate tiny scene:
+a straight piece clamped horizontally (2 zero-mass segments), 20 cm sticking out,
+gravity on, no table. Let it settle and compare the tip drop with beam theory:
+
+```
+bending   δ_b = w L⁴ / (8 EI)        w = μ g
+shear     δ_s = w L² / (2 kGA)
+```
+
+Keep `δ_b` under ~15 % of `L` (small deflection). With EI = 5e-3: δ_b = 17.7 mm.
+Use exactly the scene's segment length, rigidities, damping, substeps and
+iterations. `check_stiffness.py` does this.
+
+What I found (10 mm segments, EI = 5e-3, 20 cm):
+
+| EA [N] | kGA [N] | substeps × iterations | sim / theory |
+|---|---|---|---|
+| 2e4 | 7e3 | 10 × 20 | **10.8×** too soft. This was the "jelly". |
+| 2e4 | 7e3 | 10 × 400 | 9.2× (more iterations don't help) |
+| 200 | 7e3 | 10 × 50 | unstable (tip went **up**) |
+| 2e4 | 7 | 10 × 50 | 1.51× |
+| 200 | 20 | 10 × 20 | 1.27× |
+| 200 | 20 | 5 × 100 | 1.18× |
+| 200 | 20 | 10 × 50 | 1.07× |
+| **200** | **20** | **20 × 20** | **1.06×** (cheapest within ~6 %) |
+
+So: **in VBD, stretch and shear rigidities far above the bending one make bending
+far too soft**, and this gets worse with shorter segments (20× at 20 mm segments,
+79× at 10 mm with EI = 0.2). Real Cat6 has `EA ≈ 2e5 N`, but 200 N already keeps
+it to ~0.1 % stretch under its own weight, so keep EA and kGA moderate. Small time
+steps help more than iterations. The last ~6 % appears at every setting: it's the
+discrete model, not convergence.
+
+**Check:** with the reference JSON, `check_stiffness.py` reports `sim/theory 1.06`
+at EI 5e-3, and 1.06 at EI 2e-2.
 
 ---
 
@@ -423,7 +492,7 @@ minus 107 + 106 + 105 close pairs, plus 108 cable–table pairs.
 ```
 solver = SolverVBD(model, iterations=20, friction_epsilon=1e-4,
                    rigid_compliant_alm=True, rigid_contact_history=False)
-dt = (1/60) / 10
+dt = (1/60) / 20                     (20 substeps: see 4e)
 each substep:  state_0.clear_forces(); pipeline.collide(state_0, contacts)
                solver.step(state_0, state_1, control, contacts, dt); swap
 ```
@@ -445,10 +514,14 @@ settled when drift < 0.1 mm   (and t ≥ 1 s)
 
 Also stop on NaN ("blew up": more substeps, or softer contact `ke`).
 
-**Check (test scan, init = scan):** drift per 0.5 s goes roughly
-`75 → 18 → 13 → 10 → 7 → 5 → 3.5 → 2.3 → 1.5 → 0.9 → 0.6 → 0.4 → 0.3 → 0.05 mm`
-and it settles at **t ≈ 7 s** (~95 s wall on a 4-core CPU). Stretch
-(arc length / planned length − 1): **+0.07 %**.
+**Check (test scan, init = scan, max_time_s 20):** drift per 0.5 s goes roughly
+`117 → 22 → 4.8 → 1.9 → 1.9 → 1.3 → 0.7 → 0.6 → 0.03 mm` and it settles at
+**t = 4.5 s** (the stiff cable springs the hand-drawn loop open first). Stretch
+(arc length / planned length − 1): **+0.006 %**.
+
+A third trap: if two strands of the **start** shape overlap (closer than one
+diameter), self-contact pushes them apart and you get bursts of motion that may
+never settle. Check the start shape for it, and print where.
 With `friction_epsilon = 1e-2` instead, it never gets below ~1 mm per 0.5 s:
 see it once, so you recognise it.
 
@@ -522,26 +595,31 @@ Report mean, RMS, 95th percentile and max, in **mm**.
 
 The step that proves the whole chain works.
 
-1. Run the test scan with `EI = 1e-3` and a long `max_time_s` (20 s) so it settles.
-   Its `as_scan/` folder is now a "real" cable whose stiffness you **know**.
-2. Point the JSON's `scan` at that folder and run `EI × [0.25, 0.5, 1, 2, 4]`.
+1. Run the test scan (Stage 0) with the reference JSON and `max_time_s` 20 so it
+   settles. Its `as_scan/` folder is now a "real" cable whose stiffness you
+   **know** (EI = 5e-3).
+2. Point the JSON's `scan` at that folder, set `"up": "z"` (it's already in the
+   gravity frame, and this test is about stiffness, not Stage 2b), and run
+   `EI × [0.2, 0.5, 1, 2, 4]`.
 3. Compare.
 
 **Check:**
 
-| EI scale | 0.25× | 0.5× | **1×** | 2× | 4× |
+| EI | 1e-3 | 2.5e-3 | **5e-3 (true)** | 1e-2 | 2e-2 |
 |---|---|---|---|---|---|
-| shape RMS [mm] | 0.7 | 0.4 | **0.4** | 1.2 | 4.4 |
-| shape max [mm] | 2.5 | 1.3 | **0.9** | 3.7 | 13.0 |
-| moved [mm] | 2.4 | 1.5 | **1.0** | 3.6 | 13.0 |
+| shape RMS [mm] | 11.1 | 3.4 | **1.3** | 4.9 | 10.8 |
+| shape max [mm] | 24.0 | 7.1 | **2.3** | 8.4 | 20.5 |
+| moved [mm] | 24.1 | 7.1 | **2.5** | 8.5 | 21.3 |
 
-The true value must win. About 1 mm of `moved` remains even for the true EI
-(re-meshing). That's your pipeline's noise floor. If 1× doesn't win, don't run
-your real scan yet: look at Stage 8 first.
+The true value must win, clearly on both sides. About 2.5 mm of `moved` remains
+even for the true EI (re-meshing, and the grip and plug rebuilt from the exported
+shape). That's the pipeline's noise floor: differences below ~3 mm mean nothing.
+If the true EI doesn't win, don't run your real scan yet. Check Stages 3, 4e and 8
+first.
 
-The curve is sharp on the stiff side and shallow on the soft side, because this
-test cable leaves the gripper almost straight down. That pose limits EI from
-above much better than from below.
+This test failed three times before it passed, and each failure found a real bug:
+friction creep (Stage 8), the 10× too-soft bending (4e), and the averaged grip
+direction (Stage 3). Run it after every change to the solver settings.
 
 ---
 
@@ -562,6 +640,10 @@ above much better than from below.
 | hand or wrist under the table, IK says 0 mm | IK ignores the table; or the wrong `grasp` | 5d clearance search; match `robot.grasp` to your scan |
 | hand rotated 90° from expected | quaternion order | `(x, y, z, w)` in Newton/Warp |
 | NaN | contact too stiff for the time step | more substeps or lower `contact.ke` |
+| cable floppy like jelly, sags far more than its EI | EA / kGA far above bending; too few substeps | Stage 4e: `check_stiffness.py`; EA ~200, kGA ~20, 20 substeps |
+| bursts of motion that never settle (self-contact on) | strands overlap in the start shape | crossings must be one diameter apart (Stage 0, Stage 8 note) |
+| true EI doesn't win the self-test; hanging part off everywhere | grip direction estimated by averaging | use the tube fit's tangents (Stage 3) |
+| up tilted by 1–2° on a stiff cable | it rests on the table along a line only | Stage 2b limit: set `scan.up` from the table |
 
 ---
 
@@ -579,7 +661,8 @@ above much better than from below.
 
 ## Is the stiffness right? Look at the hanging part
 
-The first Ethernet run used `EI = 1e-3`. In the viewer the simulated cable (blue)
+The first Ethernet run used `EI = 1e-3`, and, as Stage 4e found later, the solver
+made it bend ~10× more easily than even that. In the viewer the simulated cable (blue)
 dropped **straight down** from the fingers, while the scan (red) **bows out
 sideways** before reaching the table. A cable can only hold that bow if it is
 stiff enough. So the hanging part tells you at a glance that the simulation is

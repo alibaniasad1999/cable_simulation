@@ -254,7 +254,12 @@ python 03_franka_holds_cable/ethernet_scene.py --config configs/ethernet_cat6.js
 python 03_franka_holds_cable/ethernet_scene.py --config configs/ethernet_cat6.json --viewer gl   # watch it
 python 03_franka_holds_cable/ethernet_scene.py --config configs/ethernet_cat6.json --sweep       # all EI values
 python 03_franka_holds_cable/ethernet_scene.py --config configs/ethernet_cat6.json --bend-scale 2
+python 03_franka_holds_cable/check_stiffness.py --config configs/ethernet_cat6.json             # does it bend like its EI?
 ```
+
+**Run `check_stiffness.py` first, and again whenever you change rigidities, segment
+length, substeps or iterations.** It clamps a straight 20 cm piece horizontally and
+compares the sag with beam theory. It must say `OK` (sim/theory within 15 %).
 
 Input: the tube-fit output `results/Ethernet_tube_fit/centerline.csv` (+ `summary.json`
 for the radius). The scan is in **metres, in the scanner's own frame**, which is
@@ -265,14 +270,14 @@ usually *not* z-up. The script measures which way is up from the cable itself
 
 | step | JSON | Newton call / what happens |
 |---|---|---|
-| which way is up | `scan.up` | `auto`: the direction along which the cable never climbs again (it only goes down from the gripper, then lies flat), with the flat stretch at the bottom, polished by a plane through the stretch lying on the table. Or an axis (`"y"`, `"-y"`, …) or a vector. The scan is turned so up is +z. |
+| which way is up | `scan.up` | `auto`: the table is the plane the most cable rests on (all nodes at the same, lowest height), with the gripper end on top; refined on a 0.1° grid and polished by a plane fit. Or an axis (`"y"`, `"-y"`, …) or a vector. The scan is turned so up is +z. |
 | orient the scan | `scan.gripper_end` | node 0 = the gripper end (`auto`: the higher end; the other end lies on the table) |
 | table | `scan.ground_z_m` | `add_ground_plane(height=...)`; `null` = lowest scanned centreline point − radius |
 | cable length | `cable.grip_length_m`, `cable.plug_length_m` | grip (inside the fingers) + scanned length + plug. Arc length `s = 0` is the first scanned node. |
 | segments | `sim.segment_length_m` | adjusted so the grip is a whole number of segments (10 mm → 2 grip segments) |
-| elasticity | `cable.*_rigidity_*` | `newton.Rod.create_straight(..., stretch_rigidity=EA, shear_rigidity=kGA, bend_rigidity=EI, twist_rigidity=GJ)`. With rigidities, **Newton divides by the segment length itself** (`EI / h` per joint), so changing the segment length doesn't change the cable. |
+| elasticity | `cable.*_rigidity_*` | `newton.Rod.create_straight(..., stretch_rigidity=EA, shear_rigidity=kGA, bend_rigidity=EI, twist_rigidity=GJ)`. With rigidities, **Newton divides by the segment length itself** (`EI / h` per joint). **EA and kGA are kept moderate (200 N, 20 N) on purpose**: much stiffer values make VBD bend the cable ~10× too easily (see below). |
 | mass | `cable.mass_per_length_kg_m` | `ShapeConfig(density=...)`. Each capsule has two round end caps on top of its length, which adds ~50 % volume at 10 mm segments; the density is corrected so the mass per metre is exact (printed in `meta.json` as `mass_free_cable_kg`). |
-| plug | `cable.plug_mass_kg` | extra mass (and inertia) on the plug segments |
+| plug | `cable.plug_mass_kg`, `cable.fix_plug_end` | `fix_plug_end: true` (default): the plug segments are held still at their scanned place, so the far end can't slide away. `false`: they're free and carry the plug mass. |
 | damping | `cable.bend_damping_time_s` | `bend_damping = τ · EI / h` (same idea as the example's `2e-3 × stiffness`) |
 | grip | — | the grip segments get **zero mass** = kinematic: held at the scanned position and direction. **This is the boundary condition.** |
 | Franka | `robot.*` | `add_urdf` (FR3 + hand), placed with `newton.ik` so `fr3_hand_tcp` sits on the grip, holding it as `robot.grasp` says, fingers closed to the cable radius. Several base distances and both hand flips are tried; the pose that reaches with the arm highest above the table wins. All links zero mass → kinematic. Only visual: it doesn't touch the cable. |
@@ -303,9 +308,16 @@ height and lets it fall. The hanging part should end up the same. The part lying
 on the table won't, because with friction it depends on *how* the cable came
 down. That's why `scan` is the default for the comparison.
 
-### Two solver settings that matter for a *static* comparison
+### Solver settings that matter for a *static* comparison
 
-Found while testing this scene, and worth knowing for any cable lying on a table:
+Found while testing this scene, and worth knowing for any cable in VBD:
+
+- **Stretch/shear vs bending ("jelly").** With the real-ish `EA = 2e4 N`,
+  `kGA = 7e3 N`, a clamped 20 cm piece sagged **10.8×** more than beam theory, and
+  more iterations didn't help. VBD makes bending too soft when stretch/shear are
+  far stiffer than bending, and it gets worse with shorter segments. `EA = 200 N`,
+  `kGA = 20 N`, 20 substeps × 20 iterations → within 6 %. 200 N still means only
+  ~0.1 % stretch under the cable's own weight. `check_stiffness.py` measures it.
 
 - **`friction_epsilon`.** VBD smooths friction below this sliding speed. With
   Newton's default (`1e-2` m/s), a cable lying on the table never really stops: it

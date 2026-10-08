@@ -24,6 +24,8 @@ What is simulated (see README.md in this folder for the reasoning):
   * plug    `plug_length_m` of extra cable past the last scanned node, with the
             plug mass spread over it.
   * table   a ground plane at the height where the cable lies on it.
+  * far end with cable.fix_plug_end, the plug segments are held still at their
+            scanned place too; otherwise they are free and carry the plug mass.
   * Franka  kinematic, placed with IK so its TCP sits on the grip (robot.grasp
             says how the fingers hold the cable), keeping the arm above the
             table. It does not touch the cable and does not change the result.
@@ -118,13 +120,18 @@ def find_up(X, radius, setting):
     setting: 'auto', an axis name ('z', '-y', ...) or a vector [x, y, z].
     'auto' MEASURES the scan's orientation from the cable, the way the tube fit
     measures the radius; it never looks at the simulation:
-      1. direction along which the cable climbs least (cable_rise): every
-         direction on the sphere (~1.4 deg apart), then +-2.5 deg at 0.2 deg;
-      2. up or down? The stretch lying on the table is many nodes at the SAME,
-         lowest height; the gripper end is a single high point. Choose the sign
-         that puts the flat stretch at the bottom;
-      3. polish: a plane through the nodes lying on the table (lowest 5 mm), if
-         they spread in two directions (a straight line does not define a plane).
+      1. the table: the direction for which the MOST nodes sit at the same, lowest
+         height (the stretch resting on the table), with the cable hanging at
+         least 5 cm above it and its highest point at one end (the gripper).
+         Every direction on the sphere (~1.4 deg apart) is tried. With 'up' even
+         slightly wrong, only a few nodes stay at the bottom. Ties: the direction
+         along which the cable climbs least (cable_rise);
+      2. refine within 6 deg (0.1 deg grid) counting only nodes within 0.5 mm of
+         the bottom: nodes really resting on a table are at the same height;
+      3. polish: a plane through the nodes resting on the table (refit on those
+         within 1 mm), if they spread in two directions.
+    Only the lowest stretch is used, so a stiff cable whose loop arches up off
+    the table, or a strand lying on another, does not disturb it.
     """
     if isinstance(setting, (list, tuple)):
         return unit(np.asarray(setting, float)), {"method": "given vector"}
@@ -133,32 +140,48 @@ def find_up(X, radius, setting):
     if setting != "auto":
         raise SystemExit(f"scan.up must be 'auto', an axis like 'z' or '-y', or a vector, got {setting!r}")
 
+    tol = 0.003  # nodes resting on the table: within 3 mm of the lowest one
     dirs = sphere_directions(20000)
-    up = dirs[int(np.argmin(cable_rise(X, dirs)))]
-    near = directions_near(up, 2.5, 0.2)
-    up = near[int(np.argmin(cable_rise(X, near)))]
+    H = X @ dirs.T  # (nodes, directions)
+    low, high = H.min(axis=0), H.max(axis=0)
+    flat = (H < low + tol).sum(axis=0)
+    end_on_top = np.maximum(H[0], H[-1]) > high - 0.02  # the gripper (an end) is the highest point
+    ok = (high - low > 0.05) & end_on_top
+    if not ok.any():
+        ok = high - low > 0.05
+    flat_ok = np.where(ok, flat, -1)
+    best = flat_ok >= 0.9 * flat_ok.max()  # (nearly) the most nodes on the table ...
+    climb = cable_rise(X, dirs)
+    up = dirs[int(np.argmin(np.where(best, climb, np.inf)))]  # ... and of those, climbing least
 
-    tol = max(0.005, radius)
+    # Refine: nodes really resting on a table are at the SAME height, so count
+    # those within 0.5 mm, on a 0.1 deg grid within 6 deg. (3 mm is too loose for
+    # a stiff cable whose loop arches: a tilted plane can graze more of the arch.)
+    fine_tol = 0.0005
+    near = directions_near(up, 6.0, 0.1)
+    Hn = X @ near.T
+    flat_fine = (Hn < Hn.min(axis=0) + fine_tol).sum(axis=0)
+    best = flat_fine == flat_fine.max()
+    up = near[int(np.argmin(np.where(best, cable_rise(X, near), np.inf)))]
+
     h = X @ up
-    at_bottom, at_top = int((h < h.min() + tol).sum()), int((h > h.max() - tol).sum())
-    if at_top > at_bottom:
-        up, h = -up, -h
-        at_bottom, at_top = at_top, at_bottom
-    info = {"method": "auto", "rise_mm": round(1000 * float(cable_rise(X, up)[0]), 1),
-            "nodes_lying_flat": at_bottom, "nodes_at_top": at_top}
-
-    lying = X[h < h.min() + tol]
-    for _ in range(3):  # fit, then keep only nodes within 1 mm of the plane (drops the touchdown lift)
+    lying = X[h < h.min() + fine_tol + 0.0005]
+    info = {"method": "auto", "nodes_lying_flat": int(len(lying))}
+    if len(lying) >= 3:  # do the resting nodes span an area, or only a line?
+        sv0 = np.linalg.svd(lying - lying.mean(0), compute_uv=False)
+        info["contact_is_a_line"] = bool(sv0[1] < 0.2 * sv0[0])
+    for _ in range(3):  # polish: plane through the resting nodes, then only those within 1 mm of it
         if len(lying) < 10:
             break
         centre = lying.mean(0)
         sv, vt = np.linalg.svd(lying - centre, full_matrices=False)[1:]
         n = vt[2] if vt[2] @ up > 0 else -vt[2]
         if sv[1] < 0.2 * sv[0] or np.degrees(np.arccos(np.clip(n @ up, -1, 1))) > 5.0:
-            break  # a line, not a plane, or too far from the climb estimate: keep the estimate
+            break  # a line, not a plane, or too far from the estimate: keep the estimate
         up = n
         info["polished_by_table_plane"] = True
         lying = lying[np.abs((lying - centre) @ n) < 0.001]
+    info["rise_mm"] = round(1000 * float(cable_rise(X, up)[0]), 1)
     axis = max(AXES, key=lambda k: float(np.dot(up, AXES[k])))
     info["nearest_axis"] = axis
     info["tilt_from_axis_deg"] = round(float(np.degrees(np.arccos(np.clip(up @ AXES[axis], -1, 1)))), 2)
@@ -194,6 +217,10 @@ def load_scan(cfg):
     data = np.genfromtxt(csv, delimiter=",", names=True)
     X = np.column_stack([data["x_m"], data["y_m"], data["z_m"]])
     supported = data["supported"].astype(bool) if "supported" in data.dtype.names else np.ones(len(X), bool)
+    # The tube fit's own unit tangents (from its spline): the exact direction the
+    # cable leaves the fingers. Much better than differencing nodes, and it
+    # matters: 1 deg at the grip moves the hanging part ~6 mm at 35 cm.
+    T = np.column_stack([data["tx"], data["ty"], data["tz"]]) if "tx" in data.dtype.names else None
 
     radius = cfg["cable"].get("radius_m")
     summary = {}
@@ -209,12 +236,16 @@ def load_scan(cfg):
     up, up_info = find_up(X[supported], radius, scan_cfg.get("up", "auto"))
     R = rotation_to_z(up)
     X = X @ R.T  # into the gravity-aligned world frame
+    if T is not None:
+        T = T @ R.T
 
     end = scan_cfg.get("gripper_end", "auto")
     if end == "auto":
         end = "start" if X[0, 2] >= X[-1, 2] else "end"
     if end == "end":
         X, supported = X[::-1].copy(), supported[::-1].copy()
+        if T is not None:
+            T = -T[::-1].copy()  # tangents point along the cable, from the gripper on
     s = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(X, axis=0), axis=1))])
 
     ground_z = scan_cfg.get("ground_z_m")
@@ -223,6 +254,7 @@ def load_scan(cfg):
 
     return {
         "nodes": X,
+        "tangents": T,
         "s": s,
         "supported": supported,
         "radius": float(radius),
@@ -307,8 +339,11 @@ def plan_cable(scan, cable_cfg, sim_cfg, init_mode):
     plug = n_seg * h - grip - L_scan
     n_plug = max(1, round(plug / h)) if cable_cfg["plug_length_m"] > 0 else 0
 
-    t0 = end_tangent(X, at_start=True)
-    t1 = end_tangent(X, at_start=False)
+    if scan.get("tangents") is not None:  # the tube fit's spline tangents
+        t0, t1 = unit(scan["tangents"][0]), unit(scan["tangents"][-1])
+    else:  # no tangents in the CSV: average direction over the first / last 2 cm
+        t0 = end_tangent(X, at_start=True)
+        t1 = end_tangent(X, at_start=False)
     grip_start = X[0] - grip * t0
 
     if init_mode == "scan":
@@ -635,7 +670,15 @@ def build_model(cfg, scan, plan, bend_scale, device, placement=None):
     )
     for b in cable_bodies[: plan["n_grip"]]:  # clamped in the fingers
         make_kinematic(builder, b)
-    if plan["n_plug"] > 0 and cab["plug_mass_kg"] > 0:
+    fix_plug = bool(cab.get("fix_plug_end", False))
+    if fix_plug and cfg["sim"]["init"] != "scan":
+        print("NOTE: cable.fix_plug_end only works with sim.init 'scan' (the plug must start at its scanned "
+              "place); the plug end is left free.")
+        fix_plug = False
+    if fix_plug:  # the far end is held still where the scan shows it (zero mass = kinematic)
+        for b in cable_bodies[-max(1, plan["n_plug"]):]:
+            make_kinematic(builder, b)
+    elif plan["n_plug"] > 0 and cab["plug_mass_kg"] > 0:
         dm = cab["plug_mass_kg"] / plan["n_plug"]
         for b in cable_bodies[-plan["n_plug"]:]:
             add_mass(builder, b, dm)
@@ -655,6 +698,7 @@ def build_model(cfg, scan, plan, bend_scale, device, placement=None):
         "EI_Nm2": EI, "GJ_Nm2": GJ, "bend_scale": bend_scale,
         "per_joint_bend_stiffness_Nm_per_rad": EI / h,
         "mass_free_cable_kg": round(float(masses[cable_bodies[plan["n_grip"]:]].sum()), 5),
+        "plug_end_fixed": fix_plug,
         "ground_z_m": scan["ground_z"], "robot": robot_info,
     }
     return model, cable_bodies, franka_bodies, ground_shape, info, placement
@@ -719,6 +763,7 @@ def run(cfg, scan, bend_scale, out_dir, viewer_kind="null", cache=None):
 
     # Start pose of the cable (the model itself keeps the straight rest shape).
     p, q = segment_poses(plan["nodes"])
+    warn_overlap(p, plan, scan["radius"])
     for st in (state_0, state_1):
         bq = st.body_q.numpy()
         bq[cable_bodies, :3] = p
@@ -803,6 +848,23 @@ def run(cfg, scan, bend_scale, out_dir, viewer_kind="null", cache=None):
     return info
 
 
+def warn_overlap(centres, plan, r, tol=0.001):
+    """Note where two strands of the start shape overlap (closer than one diameter).
+
+    A real cable crossing itself lies ON the other strand (centres ~2r apart).
+    If the scan puts them closer, self-contact pushes them apart at the start,
+    which shows up as a jump in the first fraction of a second.
+    """
+    n = len(centres)
+    d = np.linalg.norm(centres[:, None, :] - centres[None, :, :], axis=-1)
+    d[np.abs(np.arange(n)[:, None] - np.arange(n)[None, :]) <= 3] = np.inf  # neighbours along the cable
+    i, j = np.unravel_index(np.argmin(d), d.shape)
+    if d[i, j] < 2 * r - tol:
+        s = 0.5 * (plan["s"][:-1] + plan["s"][1:])
+        print(f"NOTE: in the start shape two strands overlap by {1000 * (2 * r - d[i, j]):.1f} mm "
+              f"(at s = {1000 * s[i]:.0f} and {1000 * s[j]:.0f} mm). Self-contact will push them apart at the start.")
+
+
 # =============================================================================
 # 7. Output
 # =============================================================================
@@ -835,7 +897,9 @@ def write_as_scan(folder, plan, nodes, scan):
     on_scan = (plan["s"] >= -1e-9) & (plan["s"] <= scan["s"][-1] + 1e-9)
     X = nodes[on_scan]  # leave out the part in the fingers and the plug, as the tube fit does
     s = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(X, axis=0), axis=1))])
-    T = np.gradient(X, axis=0)
+    # Central differences over the WHOLE cable, so the end tangents are centred on
+    # the end nodes (like a spline's), not one-sided.
+    T = np.gradient(nodes, axis=0)[on_scan]
     T /= np.linalg.norm(T, axis=1, keepdims=True)
     np.savetxt(folder / "centerline.csv", np.column_stack([s, X, T, np.ones(len(X))]), delimiter=",",
                header="s_m,x_m,y_m,z_m,tx,ty,tz,supported", comments="", fmt=["%.6f"] * 7 + ["%d"])
@@ -876,9 +940,13 @@ def main():
     print(f"up in the scan frame: ({up[0]:+.3f}, {up[1]:+.3f}, {up[2]:+.3f})  [{ui['method']}"
           + (f": nearest axis {ui['nearest_axis']}, tilt {ui['tilt_from_axis_deg']} deg, cable climbs "
              f"{ui['rise_mm']} mm, {ui['nodes_lying_flat']} nodes lying flat" if ui["method"] == "auto" else "") + "]")
-    if ui["method"] == "auto" and ui["rise_mm"] > 30.0:
-        print(f"WARNING: even with the best 'up' the cable climbs {ui['rise_mm']} mm somewhere along its length, "
-              "which a cable hanging from a gripper and lying on a table cannot do. Check the scan, or set scan.up.")
+    if ui["method"] == "auto" and ui.get("contact_is_a_line"):
+        print("NOTE: the cable rests on the table along a line only (a stiff loop arching up?). A line does not "
+              "fix a plane, so the tilt about it is uncertain by up to a degree or two. If the hanging part looks "
+              "tilted, set scan.up yourself (e.g. the table normal from CloudCompare).")
+    if ui["method"] == "auto" and ui["nodes_lying_flat"] < 10:
+        print(f"WARNING: only {ui['nodes_lying_flat']} nodes rest on a common plane, so 'up' is uncertain. "
+              "Check the red scan line in the viewer, or set scan.up.")
 
     out_root = repo_path(cfg["output_dir"]) / cfg["sim"]["init"]
     scales = cfg["sweep"]["bend_scale"] if args.sweep else [args.bend_scale]
