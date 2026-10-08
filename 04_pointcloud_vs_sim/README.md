@@ -403,3 +403,53 @@ one-page summary: the error, the noise floor, the fitted `EI` vs the table-edge
 - Fischler & Bolles (1981): RANSAC.
 - Ester et al. (1996): DBSCAN.
 - CloudCompare: <https://www.cloudcompare.org/>
+
+---
+
+## Comparing the Ethernet scan with the simulation
+
+[`compare_to_scan.py`](compare_to_scan.py) compares every run in
+`results/ethernet_cat6/<init>/` with the tube-fit centreline. It needs only numpy
+and matplotlib, no Newton.
+
+```bash
+python 04_pointcloud_vs_sim/compare_to_scan.py --config configs/ethernet_cat6.json
+```
+
+Writes `results/ethernet_cat6/<init>/compare/`:
+
+| file | what to look at |
+|---|---|
+| `summary.md` | the table below, best run in bold |
+| `metrics.csv` | the same plus more columns, for your own plots |
+| `overlay.png` | top + two side views: scan black, runs in blue (light = soft, dark = stiff) |
+| `errors.png` | shape error along the cable, with the stretch lying on the table shaded |
+| `sweep.png` | RMS error vs `EI` (all / hanging / lying), the best `EI` marked |
+
+### The numbers (all in mm, only on the scanned stretch)
+
+| column | meaning | tells you |
+|---|---|---|
+| `shape` | each scan node → nearest point of the sim curve | **main number**: is the sim cable where the real one is? |
+| `hanging` / `lying` | `shape` split at the table (more than 3 mm above lying height = hanging) | the hanging part depends on **EI and weight**; the lying part also on **friction and history** |
+| `arc` | scan and sim compared at the **same** arc length | also counts sliding along the cable and length errors |
+| `plug end` | where the last scanned node ended up | one intuitive number |
+| `moved` | max distance the sim cable travelled from its start | with `init: scan`: how far the real shape is from an equilibrium of the model |
+| `settled` | did it come to rest before `max_time_s` | **NO = don't trust that row**, raise `max_time_s` |
+
+### How to read a sweep
+
+- **Look at `hanging` first.** That part is a clean static problem (clamp + gravity
+  + EI), so its minimum over `EI` is your stiffness estimate.
+- **`lying` is not a stiffness measurement.** On the table, friction holds the cable
+  in whatever shape it was put down in. Any `EI` can keep a lying loop where it is,
+  so expect a flat or noisy curve there.
+- A **sharp minimum** in `sweep.png` means the scan pins down `EI`. A **flat** curve
+  means this pose can't tell stiffnesses apart (Part 4 §11: a cable hanging
+  straight down is the worst case).
+- `moved` large for **every** `EI` means something other than stiffness is off:
+  the grip direction, the mass, the table height, or natural curl (the cable's
+  rest shape isn't straight).
+
+### Self-test result (synthetic scan with a known stiffness)
+

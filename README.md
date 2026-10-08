@@ -26,6 +26,22 @@ several solvers) is in [`legacy/`](legacy/), kept for reference.
 | 4 | [`04_pointcloud_vs_sim/`](04_pointcloud_vs_sim/README.md) | real `.ply` vs simulation | PLY format, units & frames, aligning via the gripper, cable extraction, centreline, metrics, error budget, identifying `bend_stiffness` |
 | side quest | [`05_side_quest_joystick_mac/`](05_side_quest_joystick_mac/README.md) | drive the Franka with a gamepad on macOS | replaces the example's keyframe function |
 
+**Working now — the Ethernet cable vs its scan.** `configs/ethernet_cat6.json`
+holds every number; two scripts do the rest:
+
+```bash
+# 1. scan -> centreline (once):          results/Ethernet_tube_fit/
+python 04_pointcloud_vs_sim/tube_fit/fit_cable_tube.py Data/Ethernet.ply
+# 2. Franka + cable from the JSON, settle, export (add --viewer gl to watch, --sweep for all EI values)
+python 03_franka_holds_cable/ethernet_scene.py --config configs/ethernet_cat6.json --sweep
+# 3. compare with the scan:              results/ethernet_cat6/scan/compare/
+python 04_pointcloud_vs_sim/compare_to_scan.py --config configs/ethernet_cat6.json
+```
+
+How it works and how to read the numbers:
+[`03_franka_holds_cable/README.md` § Ethernet scene](03_franka_holds_cable/README.md#the-ethernet-scene-working-code)
+and [`04_pointcloud_vs_sim/README.md` § Comparing](04_pointcloud_vs_sim/README.md#comparing-the-ethernet-scan-with-the-simulation).
+
 Do Parts 1 → 4 **in order**. Each one ends with tasks and "check yourself"
 questions. Your code for each part goes in its folder. Write it yourself and look
 at the reference only when stuck.
@@ -35,9 +51,10 @@ at the reference only when stuck.
 ## Setup
 
 - Python 3.10–3.12 in a virtual environment (`uv` or `venv`).
-- Newton: PyPI package `newton-physics`, imported as `newton`. Install with the
-  command from the Newton README, with the extras for examples. `SolverMuJoCo` also
-  needs `mujoco` / `mujoco_warp`.
+- Newton: PyPI package **`newton`** (the old name `newton-physics` is now an empty
+  stub that only says "renamed"): `pip install "newton[examples]"`. The code here
+  was tested with `newton 1.6.1` + `warp-lang 1.18.0`. `SolverMuJoCo` also needs
+  `mujoco` / `mujoco_warp`.
 - First run the original:
   `python -m newton.examples franka_cable_ik_pick_place` (and `--help`).
 - **On a Mac**, Warp runs on the **CPU** (no CUDA). CUDA graph capture is skipped

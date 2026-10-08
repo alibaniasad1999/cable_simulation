@@ -1,0 +1,78 @@
+{
+  "name": "ethernet_cat6",
+  "_about": "Ethernet cable held by the Franka, one end in the gripper, the rest hanging down and partly lying on the table. Numbers marked GUESS are typical Cat6 values to be replaced by measurements or identified by the bend sweep.",
+
+  "scan": {
+    "centerline_csv": "results/Ethernet_tube_fit/centerline.csv",
+    "summary_json": "results/Ethernet_tube_fit/summary.json",
+    "_frame": "The scan is assumed Z-up (gravity = -z) and in metres, as written by 04_pointcloud_vs_sim/tube_fit/fit_cable_tube.py.",
+    "gripper_end": "auto",
+    "_gripper_end": "auto = the higher end of the centreline (the other end lies on the table); or 'start' / 'end' of centerline.csv",
+    "ground_z_m": null,
+    "_ground_z_m": "null = lowest cable centreline point minus the radius; set a number if the table is visible elsewhere in the scan"
+  },
+
+  "cable": {
+    "radius_m": null,
+    "_radius_m": "null = radius from summary.json (tube fit: 3.60 mm)",
+    "mass_per_length_kg_m": 0.045,
+    "_mass_per_length_kg_m": "GUESS: typical Cat6 patch cable 40-50 g/m. Weigh 1 m of your cable.",
+    "bend_rigidity_EI_Nm2": 1.0e-3,
+    "_bend_rigidity_EI_Nm2": "GUESS: Cat6 ~0.5e-3 to 2e-3 N m^2. The main unknown; see sweep.bend_scale. Table-edge test: EI = w L^4 / (8 delta).",
+    "twist_rigidity_GJ_Nm2": 7.7e-4,
+    "_twist_rigidity_GJ_Nm2": "GUESS: ~EI / 1.3 (solid round section, Poisson 0.3)",
+    "stretch_rigidity_EA_N": 2.0e4,
+    "_stretch_rigidity_EA_N": "Real Cat6 is ~2e5 N (copper). 2e4 N is softer for a faster solve; stretch under own weight is still < 0.01 %.",
+    "shear_rigidity_kGA_N": 7.0e3,
+    "bend_damping_time_s": 0.002,
+    "_bend_damping_time_s": "per-joint bend/twist damping = this x per-joint stiffness (the reference example uses 2e-3). Only changes how fast it settles.",
+    "grip_length_m": 0.02,
+    "_grip_length_m": "length of cable inside the fingers, clamped (Franka finger pad ~2 cm). Added before the first scan node.",
+    "plug_length_m": 0.036,
+    "_plug_length_m": "RJ45 plug + boot past the last scan node (the tube fit trimmed 36 mm there)",
+    "plug_mass_kg": 0.004,
+    "_plug_mass_kg": "GUESS: RJ45 plug with boot 3-5 g. Spread over the plug segments."
+  },
+
+  "contact": {
+    "ke": 1.0e4,
+    "kd": 0.1,
+    "mu": 0.5,
+    "_mu": "GUESS: PVC jacket on a table",
+    "gap_m": 0.005,
+    "self_collision": true,
+    "_self_collision": "the scanned cable crosses itself; leave on so the strands cannot pass through each other"
+  },
+
+  "robot": {
+    "enabled": true,
+    "_enabled": "the Franka is kinematic (does not move, only placed with IK). The cable boundary condition is the clamp, so the robot does not change the cable result.",
+    "base_xyz_m": null,
+    "_base_xyz_m": "null = automatic: on the table, base_distance_m behind the gripper, facing it",
+    "base_yaw_deg": null,
+    "base_distance_m": 0.5
+  },
+
+  "sim": {
+    "init": "scan",
+    "_init": "'scan' = start the cable ON the scanned shape (rest shape stays straight) and let it settle: shows how far reality is from an equilibrium of this cable model. 'drop' = start straight and horizontal from the gripper and let it fall: shows path dependence of the part lying on the table.",
+    "segment_length_m": 0.01,
+    "_segment_length_m": "~2.8 x radius; check by halving it (convergence)",
+    "fps": 60,
+    "substeps": 10,
+    "iterations": 20,
+    "max_time_s": 8.0,
+    "min_time_s": 0.5,
+    "settle_speed_m_s": 0.002,
+    "settle_hold_s": 0.3,
+    "device": null,
+    "_device": "null = Warp default (cpu on a Mac, cuda:0 with an NVIDIA GPU)"
+  },
+
+  "sweep": {
+    "bend_scale": [0.25, 0.5, 1.0, 2.0, 4.0],
+    "_bend_scale": "multipliers on bend (and twist) rigidity, run with --sweep"
+  },
+
+  "output_dir": "results/ethernet_cat6"
+}
