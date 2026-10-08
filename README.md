@@ -38,6 +38,9 @@ python 03_franka_holds_cable/ethernet_scene.py --config configs/ethernet_cat6.js
 python 04_pointcloud_vs_sim/compare_to_scan.py --config configs/ethernet_cat6.json
 ```
 
+**Write it yourself:** [`03_franka_holds_cable/GUIDE.md`](03_franka_holds_cable/GUIDE.md):
+12 stages from a test scan to the stiffness self-test, with the numbers to expect.
+
 How it works and how to read the numbers:
 [`03_franka_holds_cable/README.md` § Ethernet scene](03_franka_holds_cable/README.md#the-ethernet-scene-working-code)
 and [`04_pointcloud_vs_sim/README.md` § Comparing](04_pointcloud_vs_sim/README.md#comparing-the-ethernet-scan-with-the-simulation).

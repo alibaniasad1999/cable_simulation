@@ -245,7 +245,8 @@ the mouse across both solvers). For option K, use the plain viewer calls:
 ## The Ethernet scene (working code)
 
 [`ethernet_scene.py`](ethernet_scene.py) is Option K applied to your scanned
-Ethernet cable. Every number comes from [`configs/ethernet_cat6.json`](../configs/ethernet_cat6.json)
+Ethernet cable. **To write it yourself from scratch, follow [GUIDE.md](GUIDE.md)**
+(stages, Newton calls, and the numbers to expect at each step). Every number comes from [`configs/ethernet_cat6.json`](../configs/ethernet_cat6.json)
 (the `_...` keys in that file explain each value).
 
 ```bash

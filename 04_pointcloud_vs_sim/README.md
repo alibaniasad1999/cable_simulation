@@ -408,6 +408,9 @@ one-page summary: the error, the noise floor, the fitted `EI` vs the table-edge
 
 ## Comparing the Ethernet scan with the simulation
 
+To write the comparison yourself, see
+[`03_franka_holds_cable/GUIDE.md`](../03_franka_holds_cable/GUIDE.md), Stages 10–12.
+
 [`compare_to_scan.py`](compare_to_scan.py) compares every run in
 `results/ethernet_cat6/<init>/` with the tube-fit centreline. It needs only numpy
 and matplotlib, no Newton.
