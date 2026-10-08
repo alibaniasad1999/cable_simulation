@@ -453,3 +453,28 @@ Writes `results/ethernet_cat6/<init>/compare/`:
 
 ### Self-test result (synthetic scan with a known stiffness)
 
+A settled simulation with `EI = 1e-3 N m²` was written out as a scan (its
+`as_scan/` folder) and used as the "real" cable. The cable hangs from 35 cm,
+leaves the gripper almost straight down, and ends in a self-crossing loop on the
+table. Then the sweep ran on it:
+
+| EI scale | 0.25× | 0.5× | **1× (true)** | 2× | 4× |
+|---|---|---|---|---|---|
+| shape RMS [mm] | 0.7 | 0.4 | **0.4** | 1.2 | 4.4 |
+| shape max [mm] | 2.5 | 1.3 | **0.9** | 3.7 | 13.0 |
+| moved [mm] | 2.4 | 1.5 | **1.0** | 3.6 | 13.0 |
+
+- The true stiffness wins: lowest RMS and max, and it moves least.
+- About 1 mm of `moved` remains even for the true `EI` (re-meshing: 107 vs 108
+  segments, and the plug rounding). Treat ~1 mm as the noise floor of the
+  pipeline itself.
+- The minimum is **sharp on the stiff side, shallow on the soft side** (0.5× is
+  only 0.4 mm worse in max). A cable leaving the gripper straight down constrains
+  `EI` from above much better than from below. A scan where the cable leaves
+  the gripper sideways separates soft values better (§11).
+
+This test **failed** at first, and fixing it found two solver settings (Part 3,
+*Two solver settings that matter*). With Newton's default friction smoothing,
+the lying cable kept creeping, and the true `EI` moved 11 mm and scored no
+better than 0.25×. Run this test again whenever you change solver settings.
+

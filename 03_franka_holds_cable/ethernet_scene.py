@@ -25,6 +25,7 @@ What is simulated (see README.md in this folder for the reasoning):
   * table   a ground plane at the height where the cable lies on it.
   * Franka  kinematic, placed with IK so its TCP sits on the grip. It does not
             touch the cable in the simulation and does not change the result.
+  * settle  until the shape stops changing (sim.settle_tol_m over settle_window_s).
 """
 
 from __future__ import annotations
@@ -486,7 +487,8 @@ def run(cfg, scan, bend_scale, out_dir, viewer_kind="null"):
     pairs, n_pairs = contact_pairs(model, cable_bodies, franka_bodies, cfg["contact"]["self_collision"], device)
     pipeline = newton.CollisionPipeline(model, broad_phase="explicit", shape_pairs_filtered=pairs)
     contacts = pipeline.contacts()
-    solver = SolverVBD(model, iterations=int(sim["iterations"]), rigid_compliant_alm=True, rigid_contact_history=False)
+    solver = SolverVBD(model, iterations=int(sim["iterations"]), friction_epsilon=float(sim["friction_epsilon"]),
+                       rigid_compliant_alm=True, rigid_contact_history=False)
 
     viewer = None
     if viewer_kind == "gl":
@@ -497,9 +499,10 @@ def run(cfg, scan, bend_scale, out_dir, viewer_kind="null"):
     fps, substeps = sim["fps"], int(sim["substeps"])
     frame_dt = 1.0 / fps
     dt = frame_dt / substeps
-    free = np.asarray(cable_bodies[plan["n_grip"]:])
     half = 0.5 * plan["h"]
-    t, calm_since, settled = 0.0, None, False
+    window = max(1, round(sim["settle_window_s"] * fps))  # frames between shape checks
+    snapshot = nodes_from_bodies(state_0.body_q.numpy()[cable_bodies], half)
+    t, frame, drift, settled = 0.0, 0, float("nan"), False
     wall0 = time.time()
     print(f"[{info['segments']} segments of {1000 * plan['h']:.1f} mm, EI {info['EI_Nm2']:.3g} N m^2, "
           f"{n_pairs} contact pairs, device {device}]")
@@ -520,23 +523,24 @@ def run(cfg, scan, bend_scale, out_dir, viewer_kind="null"):
             solver.step(state_0, state_1, control, contacts, dt)
             state_0, state_1 = state_1, state_0
         t += frame_dt
-        speed = float(np.linalg.norm(state_0.body_qd.numpy()[free, :3], axis=1).max())
-        if not np.isfinite(speed):
-            raise SystemExit("simulation blew up (NaN): try more substeps/iterations or a softer contact ke")
-        if speed < sim["settle_speed_m_s"] and t >= sim["min_time_s"]:
-            calm_since = t if calm_since is None else calm_since
-            if t - calm_since >= sim["settle_hold_s"]:
-                settled = True
-                break
-        else:
-            calm_since = None
-        if round(t * fps) % fps == 0:
-            print(f"  t = {t:4.1f} s   max speed {1000 * speed:7.2f} mm/s")
+        frame += 1
         render()
+        if frame % window:
+            continue
+        # Settled = the shape stopped changing (largest node displacement over one window).
+        nodes = nodes_from_bodies(state_0.body_q.numpy()[cable_bodies], half)
+        if not np.all(np.isfinite(nodes)):
+            raise SystemExit("simulation blew up (NaN): try more substeps/iterations or a softer contact ke")
+        drift = float(np.linalg.norm(nodes - snapshot, axis=1).max())
+        snapshot = nodes
+        print(f"  t = {t:4.1f} s   shape change over {sim['settle_window_s']} s: {1000 * drift:7.3f} mm")
+        if drift < sim["settle_tol_m"] and t >= sim["min_time_s"]:
+            settled = True
+            break
 
     nodes = nodes_from_bodies(state_0.body_q.numpy()[cable_bodies], half)
     info.update({"init": sim["init"], "settled": settled, "sim_time_s": round(t, 3),
-                 "wall_time_s": round(time.time() - wall0, 1), "final_max_speed_m_s": speed,
+                 "wall_time_s": round(time.time() - wall0, 1), "final_drift_m_per_window": drift,
                  "arc_length_m": float(np.linalg.norm(np.diff(nodes, axis=0), axis=1).sum()),
                  "scan": scan["path"], "gripper_end": scan["gripper_end"]})
     info["stretch_percent"] = 100.0 * (info["arc_length_m"] / plan["length_total"] - 1.0)

@@ -273,7 +273,8 @@ for the radius). The scan is taken as **Z-up, in metres**.
 | grip | — | the grip segments get **zero mass** = kinematic: held at the scanned position and direction. **This is the boundary condition.** |
 | Franka | `robot.*` | `add_urdf` (FR3 + hand), placed with `newton.ik` so `fr3_hand_tcp` sits on the grip, hand z along the cable, fingers closed to the cable radius. All links zero mass → kinematic. Only visual: it doesn't touch the cable. |
 | contacts | `contact.*` | explicit pairs: cable–table and cable–cable (more than 3 segments apart, because the scanned cable crosses itself). No robot pairs. |
-| solver | `sim.iterations`, `substeps` | `SolverVBD(rigid_compliant_alm=True)`; runs until the fastest segment is below `settle_speed_m_s` for `settle_hold_s` |
+| solver | `sim.iterations`, `substeps`, `friction_epsilon` | `SolverVBD(iterations, friction_epsilon, rigid_compliant_alm=True)` |
+| settle | `sim.settle_window_s`, `settle_tol_m` | runs until no node moved more than `settle_tol_m` (0.1 mm) over `settle_window_s` (0.5 s), or `max_time_s` |
 
 ### The key trick: rest shape straight, start pose curved
 
@@ -297,6 +298,20 @@ cable model go?"* If the model were perfect, it would stay put (`moved ≈ 0`).
 height and lets it fall. The hanging part should end up the same. The part lying
 on the table won't, because with friction it depends on *how* the cable came
 down. That's why `scan` is the default for the comparison.
+
+### Two solver settings that matter for a *static* comparison
+
+Found while testing this scene, and worth knowing for any cable lying on a table:
+
+- **`friction_epsilon`.** VBD smooths friction below this sliding speed. With
+  Newton's default (`1e-2` m/s), a cable lying on the table never really stops: it
+  creeps about 1 mm/s, forever, so the final shape depends on how long you wait.
+  With `1e-4` it sticks: drift falls from ~1 mm to ~0.03 mm per 0.5 s. More
+  iterations or more damping did **not** fix it. This setting did.
+- **Settling by shape, not speed.** Even at rest, VBD body velocities carry
+  ~1–5 mm/s of iteration noise (a few µm per 1/600 s step), on random segments.
+  A speed threshold therefore never triggers. The script instead compares the
+  centreline every 0.5 s and stops when nothing moved more than 0.1 mm.
 
 ### Outputs (`results/ethernet_cat6/<init>/bend_x<scale>/`)
 

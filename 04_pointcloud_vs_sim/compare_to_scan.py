@@ -230,21 +230,28 @@ def plot_sweep(path, rows):
     fig, ax = plt.subplots(figsize=(8, 4.5), facecolor=SURFACE)
     style_axes(ax)
     series = [("all", "shape_rms_mm", "o"), ("hanging", "shape_hanging_rms_mm", "s"), ("lying", "shape_lying_rms_mm", "^")]
+    ends = []
     for (name, key, marker), c in zip(series, CATEGORICAL):
         y = np.array([r[key] for r in rows], float)
         if np.all(np.isnan(y)):
             continue
         ax.plot(EI, y, color=c, linewidth=2, marker=marker, markersize=8, label=name)
-        ax.annotate(name, (EI[-1], y[-1]), textcoords="offset points", xytext=(8, 0), va="center",
-                    color=INK_2, fontsize=9)
+        ends.append((y[-1], name))
+    # Direct labels at the right end, staggered so close values do not collide.
+    for rank, (y_end, name) in enumerate(sorted(ends)):
+        ax.annotate(name, (EI[-1], y_end), textcoords="offset points", xytext=(10, 11 * (rank - (len(ends) - 1) / 2)),
+                    va="center", color=INK_2, fontsize=9)
+    ax.set_ylim(0, ax.get_ylim()[1] * 1.1)  # headroom for the end labels
     best = rows[int(np.nanargmin([r["shape_rms_mm"] for r in rows]))]
     ax.axvline(best["EI_Nm2"], color=MUTED, linewidth=1, linestyle=":")
     ax.annotate(f"best EI = {best['EI_Nm2']:.3g}", (best["EI_Nm2"], ax.get_ylim()[1]), textcoords="offset points",
                 xytext=(4, -12), color=INK_2, fontsize=8)
     ax.set_xscale("log")
+    ax.set_xticks(EI, [f"{v:.2g}" for v in EI])
+    ax.xaxis.set_minor_locator(plt.NullLocator())
+    ax.set_xlim(EI[0] / 1.3, EI[-1] * 1.6)
     ax.set_xlabel("bending rigidity EI [N m²]")
     ax.set_ylabel("RMS shape error [mm]")
-    ax.set_ylim(bottom=0)
     ax.set_title("Which stiffness matches the scan?", color=INK, fontsize=11, loc="left")
     ax.legend(frameon=False, fontsize=8, labelcolor=INK_2)
     fig.tight_layout()
