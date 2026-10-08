@@ -23,8 +23,9 @@ What is simulated (see README.md in this folder for the reasoning):
   * plug    `plug_length_m` of extra cable past the last scanned node, with the
             plug mass spread over it.
   * table   a ground plane at the height where the cable lies on it.
-  * Franka  kinematic, placed with IK so its TCP sits on the grip. It does not
-            touch the cable in the simulation and does not change the result.
+  * Franka  kinematic, placed with IK so its TCP sits on the grip (robot.grasp
+            says how the fingers hold the cable), keeping the arm above the
+            table. It does not touch the cable and does not change the result.
   * settle  until the shape stops changing (sim.settle_tol_m over settle_window_s).
 """
 
@@ -262,8 +263,23 @@ FRANKA_URDF = "urdf/fr3_franka_hand.urdf"
 FRANKA_HOME = [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785, 0.04, 0.04]
 
 
-def franka_base(cfg_robot, scan, plan):
-    """Base transform: given in the JSON, or on the table behind the gripper, facing it."""
+def rot_z(angle):
+    c, s = np.cos(angle), np.sin(angle)
+    return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+
+
+def quat_rotate(q, v):
+    """Rotate vectors v (N, 3) by one quaternion q (x, y, z, w)."""
+    u, w = np.asarray(q[:3], float), float(q[3])
+    return v + 2.0 * np.cross(u, np.cross(u, v) + w * v)
+
+
+def base_candidates(cfg_robot, scan, plan):
+    """Base poses (position, yaw) to try.
+
+    Given in the JSON: only that one. Automatic: on the table, on the far side of
+    the grip from the cable, facing the grip, at a few distances.
+    """
     grip = plan["grip_center"]
     if cfg_robot.get("base_xyz_m") is not None:
         base = np.asarray(cfg_robot["base_xyz_m"], float)
@@ -272,26 +288,58 @@ def franka_base(cfg_robot, scan, plan):
         else:
             d = grip - base
             yaw = np.arctan2(d[1], d[0])
-    else:
-        away = scan["nodes"].mean(0) - grip  # where the cable is
+        return [(base, float(yaw))]
+    away = scan["nodes"].mean(0) - grip  # where the cable is
+    away[2] = 0.0
+    if np.linalg.norm(away) < 1e-6:
+        away = -plan["grip_tangent"].copy()
         away[2] = 0.0
-        if np.linalg.norm(away) < 1e-6:
-            away = -plan["grip_tangent"].copy()
-            away[2] = 0.0
-        away = unit(away) if np.linalg.norm(away) > 1e-6 else np.array([1.0, 0.0, 0.0])
-        base = grip - float(cfg_robot.get("base_distance_m", 0.5)) * away
+    away = unit(away) if np.linalg.norm(away) > 1e-6 else np.array([1.0, 0.0, 0.0])
+    d0 = float(cfg_robot.get("base_distance_m", 0.5))
+    out = []
+    for d in [d0] + [d for d in (0.4, 0.5, 0.6, 0.7) if abs(d - d0) > 1e-6]:
+        base = grip - d * away
         base[2] = scan["ground_z"]
-        yaw = np.arctan2(away[1], away[0])
-    return base, float(yaw)
+        out.append((base, float(np.arctan2(away[1], away[0]))))
+    return out
 
 
-def tcp_target(plan):
-    """TCP pose: between the fingertips on the grip, hand z along the cable."""
-    z = plan["grip_tangent"]
-    y = np.cross(UP, z)
-    y = unit(y) if np.linalg.norm(y) > 1e-6 else np.array([0.0, 1.0, 0.0])  # finger-closing axis, horizontal
-    x = np.cross(y, z)
-    return plan["grip_center"], quat_from_matrix(np.column_stack([x, y, z]))
+def tcp_target(plan, grasp, flip, toward):
+    """TCP pose on the grip: position and rotation matrix [x y z] of fr3_hand_tcp.
+
+    The fingers close along the hand's y axis; the hand's z axis points from the
+    wrist out through the fingertips.
+
+      'across'  the finger pads pinch the cable from the sides: the cable runs
+                along hand x, and the hand comes from above as much as the cable
+                direction allows (like the reference pick-and-place example).
+      'along'   the cable comes straight out of the fingertips: hand z along the
+                cable. The hand then sits behind the grip, on the side away from
+                the cable, which can put it under the table for a low grip or a
+                cable leaving upward.
+      flip      the same grasp turned 180 deg about hand z (the fingers are
+                symmetric, the arm pose is not).
+      toward    horizontal unit vector from the robot base to the grip, used when
+                the cable is vertical and 'down' is not defined across it.
+    """
+    t = plan["grip_tangent"]
+    if grasp == "along":
+        z = t
+        y = np.cross(UP, z)
+        y = unit(y) if np.linalg.norm(y) > 1e-6 else unit(np.cross(UP, toward))
+        x = np.cross(y, z)
+    elif grasp == "across":
+        x = t
+        z = -UP - np.dot(-UP, x) * x  # the most downward direction across the cable
+        if np.linalg.norm(z) < 1e-3:  # cable vertical: reach in horizontally from the robot
+            z = toward - np.dot(toward, x) * x
+        z = unit(z)
+        y = np.cross(z, x)
+    else:
+        raise SystemExit(f"robot.grasp must be 'across' or 'along', got {grasp!r}")
+    if flip:
+        x, y = -x, -y
+    return plan["grip_center"], np.column_stack([x, y, z])
 
 
 def add_franka(builder, base, yaw):
@@ -307,42 +355,126 @@ def add_franka(builder, base, yaw):
     return list(range(start, builder.body_count))
 
 
-def solve_franka_ik(base, yaw, target_p, target_q, finger, device):
-    """Joint angles putting fr3_hand_tcp at the target, on a Franka-only model."""
-    b = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
-    add_franka(b, base, yaw)
-    b.joint_q[:9] = FRANKA_HOME
-    m = b.finalize(device=device)
-    tcp = m.body_label.index(next(l for l in m.body_label if l.endswith("fr3_hand_tcp")))
-    n = m.joint_coord_count
+class FrankaIK:
+    """A Franka-only model with its base at the origin: IK, and the robot's lowest point.
 
-    q = wp.array(np.asarray(m.joint_q.numpy(), np.float32).reshape(1, n), dtype=float, device=device)
-    pos_obj = ik.IKObjectivePosition(
-        link_index=tcp, link_offset=wp.vec3(0.0, 0.0, 0.0),
-        target_positions=wp.array([wp.vec3(*target_p)], dtype=wp.vec3, device=device))
-    rot_obj = ik.IKObjectiveRotation(
-        link_index=tcp, link_offset_rotation=wp.quat_identity(),
-        target_rotations=wp.array([wp.vec4(*target_q)], dtype=wp.vec4, device=device))
-    lim_obj = ik.IKObjectiveJointLimit(
-        joint_limit_lower=m.joint_limit_lower, joint_limit_upper=m.joint_limit_upper, weight=10.0)
-    solver = ik.IKSolver(model=m, n_problems=1, objectives=[pos_obj, rot_obj, lim_obj],
-                         lambda_initial=0.05, jacobian_mode=ik.IKJacobianType.ANALYTIC)
-    solver.step(q, q, iterations=300)
+    IK only places the TCP. Nothing stops the rest of the arm from going through
+    the table, so every solution is also checked against the table using the
+    robot's real geometry (mesh vertices and box corners of every moving link;
+    the base and link0 stand on the table and are left out).
+    """
 
-    q_np = q.numpy().reshape(-1).copy()
-    q_np[7:9] = finger
-    st = m.state()
-    newton.eval_fk(m, wp.array(q_np, dtype=float, device=device), m.joint_qd, st)
-    got = st.body_q.numpy()[tcp]
-    pos_err = float(np.linalg.norm(got[:3] - target_p))
-    ang_err = float(np.degrees(2 * np.arccos(min(1.0, abs(np.dot(got[3:7], target_q))))))
-    return q_np, pos_err, ang_err
+    def __init__(self, device):
+        b = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
+        add_franka(b, np.zeros(3), 0.0)
+        b.joint_q[:9] = FRANKA_HOME
+        self.model = m = b.finalize(device=device)
+        self.device = device
+        self.names = [label.split("/")[-1] for label in m.body_label]
+        self.tcp = self.names.index("fr3_hand_tcp")
+        body, xf = m.shape_body.numpy(), m.shape_transform.numpy()
+        kind, scale = m.shape_type.numpy(), m.shape_scale.numpy()
+        corners = np.array([[i, j, k] for i in (-1, 1) for j in (-1, 1) for k in (-1, 1)], float)
+        self.points = []  # (body index, shape points in the body frame)
+        bolted = {"base", "fr3_link0"}  # stand on the table: not part of the check
+        for i in range(m.shape_count):
+            if body[i] < 0 or self.names[body[i]] in bolted:
+                continue
+            if kind[i] == int(newton.GeoType.MESH):
+                v = np.asarray(m.shape_source[i].vertices, float) * scale[i]
+            elif kind[i] == int(newton.GeoType.BOX):
+                v = corners * scale[i]
+            else:
+                v = np.zeros((1, 3))
+            self.points.append((int(body[i]), xf[i, :3] + quat_rotate(xf[i, 3:7], v)))
+
+    def solve(self, target_p, target_R, finger):
+        """Joint angles putting fr3_hand_tcp at (target_p, target_R), both in the base frame."""
+        m, device = self.model, self.device
+        target_q = quat_from_matrix(target_R)
+        n = m.joint_coord_count
+        q = wp.array(np.asarray(FRANKA_HOME, np.float32).reshape(1, n), dtype=float, device=device)
+        pos_obj = ik.IKObjectivePosition(
+            link_index=self.tcp, link_offset=wp.vec3(0.0, 0.0, 0.0),
+            target_positions=wp.array([wp.vec3(*target_p)], dtype=wp.vec3, device=device))
+        rot_obj = ik.IKObjectiveRotation(
+            link_index=self.tcp, link_offset_rotation=wp.quat_identity(),
+            target_rotations=wp.array([wp.vec4(*target_q)], dtype=wp.vec4, device=device))
+        lim_obj = ik.IKObjectiveJointLimit(
+            joint_limit_lower=m.joint_limit_lower, joint_limit_upper=m.joint_limit_upper, weight=10.0)
+        solver = ik.IKSolver(model=m, n_problems=1, objectives=[pos_obj, rot_obj, lim_obj],
+                             lambda_initial=0.05, jacobian_mode=ik.IKJacobianType.ANALYTIC)
+        solver.step(q, q, iterations=300)
+
+        q_np = q.numpy().reshape(-1).copy()
+        q_np[7:9] = finger
+        st = m.state()
+        newton.eval_fk(m, wp.array(q_np, dtype=float, device=device), m.joint_qd, st)
+        body_q = st.body_q.numpy()
+        got = body_q[self.tcp]
+        pos_err = float(np.linalg.norm(got[:3] - target_p))
+        ang_err = float(np.degrees(2 * np.arccos(min(1.0, abs(np.dot(got[3:7], target_q))))))
+        return q_np, pos_err, ang_err, body_q
+
+    def lowest(self, body_q):
+        """Lowest point of the robot (base frame z) and the link it belongs to."""
+        z_min, link = np.inf, ""
+        for b, v in self.points:
+            z = float((body_q[b, :3] + quat_rotate(body_q[b, 3:7], v))[:, 2].min())
+            if z < z_min:
+                z_min, link = z, self.names[b]
+        return z_min, link
+
+
+def place_franka(cfg_robot, scan, plan, finger, device):
+    """Pick a base pose and joint angles so the TCP holds the grip and the arm stays above the table.
+
+    Tries every base candidate x both hand flips, keeps the solutions that reach
+    the grip, and of those the one with the most clearance above the table. This
+    only places the (visual) robot: the cable's grip is the same in every case.
+    """
+    grasp = cfg_robot.get("grasp", "across")
+    solver = FrankaIK(device)
+    grip = plan["grip_center"]
+    tried = []
+    for base, yaw in base_candidates(cfg_robot, scan, plan):
+        toward = grip - base
+        toward[2] = 0.0
+        toward = unit(toward) if np.linalg.norm(toward) > 1e-6 else np.array([1.0, 0.0, 0.0])
+        to_base = rot_z(-yaw)  # world -> base frame (the base is only turned about z)
+        for flip in (False, True):
+            p, R = tcp_target(plan, grasp, flip, toward)
+            q, pos_err, ang_err, body_q = solver.solve(to_base @ (p - base), to_base @ R, finger)
+            low, link = solver.lowest(body_q)
+            tried.append({"base": base, "yaw": yaw, "flip": flip, "q": q, "pos_err": pos_err, "ang_err": ang_err,
+                          "clearance": base[2] + low - scan["ground_z"], "link": link,
+                          "distance": float(np.linalg.norm((grip - base)[:2]))})
+    reached = [c for c in tried if c["pos_err"] < 0.005 and c["ang_err"] < 2.0]
+    best = max(reached, key=lambda c: c["clearance"]) if reached else min(tried, key=lambda c: c["pos_err"])
+
+    print(f"Franka: grasp '{grasp}', base {best['distance']:.2f} m from the grip"
+          f"{', hand flipped' if best['flip'] else ''}: IK {1000 * best['pos_err']:.1f} mm / "
+          f"{best['ang_err']:.1f} deg, lowest point {1000 * best['clearance']:+.0f} mm above the table "
+          f"({best['link']}); {len(reached)} of {len(tried)} poses tried reach the grip")
+    if not reached:
+        print("WARNING: no pose reaches the grip. The robot is only visual and the cable is unaffected; "
+              "set robot.base_xyz_m (where your robot stands in the scan frame) or change robot.grasp.")
+    elif best["clearance"] < 0.0:
+        print(f"WARNING: the Franka goes {-1000 * best['clearance']:.0f} mm below the table ({best['link']}) in every "
+              f"pose tried. The cable is unaffected; try robot.grasp "
+              f"'{'along' if grasp == 'across' else 'across'}' or set robot.base_xyz_m.")
+    info = {"grasp": grasp, "base_xyz_m": best["base"].round(4).tolist(),
+            "base_yaw_deg": round(float(np.degrees(best["yaw"])), 2), "hand_flipped": best["flip"],
+            "joint_q": np.round(best["q"], 5).tolist(), "ik_pos_err_mm": round(1000 * best["pos_err"], 2),
+            "ik_ang_err_deg": round(best["ang_err"], 2), "clearance_above_table_mm": round(1000 * best["clearance"], 1),
+            "lowest_link": best["link"], "poses_tried": len(tried), "poses_reaching": len(reached)}
+    return best["base"], best["yaw"], best["q"], info
 
 
 # =============================================================================
 # 5. Build the Newton model
 # =============================================================================
-def build_model(cfg, scan, plan, bend_scale, device):
+def build_model(cfg, scan, plan, bend_scale, device, placement=None):
     cab, con, rob = cfg["cable"], cfg["contact"], cfg["robot"]
     r = scan["radius"]
     h = plan["h"]
@@ -353,21 +485,14 @@ def build_model(cfg, scan, plan, bend_scale, device):
     # --- Franka (kinematic) ---------------------------------------------------
     franka_bodies, robot_info = [], {}
     if rob.get("enabled", True):
-        base, yaw = franka_base(rob, scan, plan)
-        tp, tq = tcp_target(plan)
-        q_ik, pos_err, ang_err = solve_franka_ik(base, yaw, tp, tq, finger=r, device=device)
+        if placement is None:
+            placement = place_franka(rob, scan, plan, finger=r, device=device)
+        base, yaw, q_robot, robot_info = placement
         franka_bodies = add_franka(builder, base, yaw)
-        builder.joint_q[:9] = q_ik.tolist()
-        builder.joint_target_q[:9] = q_ik.tolist()
+        builder.joint_q[:9] = q_robot.tolist()
+        builder.joint_target_q[:9] = q_robot.tolist()
         for b in franka_bodies:  # zero mass = kinematic: VBD never moves it
             make_kinematic(builder, b)
-        robot_info = {"base_xyz_m": base.round(4).tolist(), "base_yaw_deg": round(np.degrees(yaw), 2),
-                      "joint_q": np.round(q_ik, 5).tolist(), "ik_pos_err_mm": round(1000 * pos_err, 2),
-                      "ik_ang_err_deg": round(ang_err, 2)}
-        if pos_err > 0.01 or ang_err > 5.0:
-            print(f"WARNING: Franka cannot reach the grip exactly (IK error {1000 * pos_err:.1f} mm, "
-                  f"{ang_err:.1f} deg). The robot is only visual; the cable clamp is unaffected. "
-                  "Set robot.base_xyz_m in the JSON to move the robot.")
 
     # --- Cable ----------------------------------------------------------------
     EI = cab["bend_rigidity_EI_Nm2"] * bend_scale
@@ -417,7 +542,7 @@ def build_model(cfg, scan, plan, bend_scale, device):
         "mass_free_cable_kg": round(float(masses[cable_bodies[plan["n_grip"]:]].sum()), 5),
         "ground_z_m": scan["ground_z"], "robot": robot_info,
     }
-    return model, cable_bodies, franka_bodies, ground_shape, info
+    return model, cable_bodies, franka_bodies, ground_shape, info, placement
 
 
 def make_kinematic(builder, b):
@@ -462,11 +587,15 @@ def contact_pairs(model, cable_bodies, franka_bodies, self_collision, device):
 # =============================================================================
 # 6. Simulate one run
 # =============================================================================
-def run(cfg, scan, bend_scale, out_dir, viewer_kind="null"):
+def run(cfg, scan, bend_scale, out_dir, viewer_kind="null", cache=None):
+    """One simulation. `cache` (a dict) keeps the robot placement between sweep runs:
+    the grip is the same for every stiffness, so the IK search is done once."""
     sim = cfg["sim"]
     device = sim.get("device")
+    cache = {} if cache is None else cache
     plan = plan_cable(scan, cfg["cable"], sim, sim["init"])
-    model, cable_bodies, franka_bodies, ground_shape, info = build_model(cfg, scan, plan, bend_scale, device)
+    model, cable_bodies, franka_bodies, ground_shape, info, cache["robot"] = build_model(
+        cfg, scan, plan, bend_scale, device, cache.get("robot"))
     device = model.device
 
     state_0, state_1, control = model.state(), model.state(), model.control()
@@ -626,8 +755,9 @@ def main():
 
     out_root = repo_path(cfg["output_dir"]) / cfg["sim"]["init"]
     scales = cfg["sweep"]["bend_scale"] if args.sweep else [args.bend_scale]
+    cache = {}
     for k in scales:
-        run(cfg, scan, float(k), out_root / run_label(float(k)), args.viewer if not args.sweep else "null")
+        run(cfg, scan, float(k), out_root / run_label(float(k)), args.viewer if not args.sweep else "null", cache)
     with open(out_root / "config_used.json", "w") as f:
         json.dump(cfg, f, indent=2)
 

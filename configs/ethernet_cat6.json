@@ -47,10 +47,13 @@
   "robot": {
     "enabled": true,
     "_enabled": "the Franka is kinematic (does not move, only placed with IK). The cable boundary condition is the clamp, so the robot does not change the cable result.",
+    "grasp": "across",
+    "_grasp": "how the fingers hold the cable. 'across' = the finger pads pinch it from the sides, hand above the cable (like the reference example). 'along' = the cable comes straight out of the fingertips. Look at your scan/photo and pick the one that matches. Visual only.",
     "base_xyz_m": null,
-    "_base_xyz_m": "null = automatic: on the table, base_distance_m behind the gripper, facing it",
+    "_base_xyz_m": "null = automatic: on the table, on the far side of the grip from the cable, facing it. The distances 0.4-0.7 m and both hand flips are tried, and the pose that reaches the grip with the arm highest above the table is kept.",
     "base_yaw_deg": null,
-    "base_distance_m": 0.5
+    "base_distance_m": 0.5,
+    "_base_distance_m": "first distance tried in automatic placement"
   },
 
   "sim": {

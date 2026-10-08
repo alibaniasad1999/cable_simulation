@@ -206,40 +206,54 @@ from 4c. So: place it with IK, then make every link zero-mass.
 
 ### 5a. Where the base goes
 
-If the JSON doesn't give `base_xyz_m`: put the base on the table, 0.5 m from the
-grip, on the side **away from the cable**:
+If the JSON doesn't give `base_xyz_m`: put the base on the table, on the side of the
+grip **away from the cable**, facing the grip:
 
 ```
 away = (mean of scan nodes − grip centre), with z set to 0, normalised
-base = grip_centre − 0.5 · away,   base_z = ground_z
+base = grip_centre − d · away,   base_z = ground_z
 yaw  = atan2(away_y, away_x)          (the robot faces the grip)
 ```
 
 `grip_centre = X[0] − ½·grip·t₀`. Base transform:
 `wp.transform(base, wp.quat_from_axis_angle(wp.vec3(0, 0, 1), yaw))`.
+Don't fix `d`: try `d = 0.4, 0.5, 0.6, 0.7` m (see 5d).
 
-### 5b. The TCP target frame
+### 5b. The TCP target frame: how the fingers hold the cable
 
-The cable comes out of the fingertips along the hand's **z** axis. The fingers
-close along the hand's **y** axis, so keep it horizontal:
+The fingers close along the hand's **y** axis. The hand's **z** axis points from the
+wrist out through the fingertips. There are two ways to hold a cable end, and
+they put the hand in very different places:
 
 ```
-z = t₀
-y = unit(up × z)          (if z is vertical, use world y)
-x = y × z
-R = [x y z]  (columns)  →  quaternion
+across (default, like the reference example)       along
+the pads pinch the cable from the sides            the cable comes out of the fingertips
+x = t₀                                             z = t₀
+z = the most downward direction across the cable:  y = unit(up × z)   (horizontal)
+    z = unit(−up − ((−up)·x) x)                    x = y × z
+    (cable vertical → use the horizontal
+     direction from the robot base instead)
+y = z × x
 ```
 
-Write the matrix → quaternion conversion yourself (the standard "trace" method).
-**Newton/Warp order is `(x, y, z, w)`.** Test it on a 90° rotation about z before
-trusting it.
+`R = [x y z]` (columns) → quaternion. Write the matrix → quaternion conversion
+yourself (the standard "trace" method). **Newton/Warp order is `(x, y, z, w)`.**
+Test it on a 90° rotation about z before trusting it.
+
+Which one is right is a fact of your real setup: look at the gripper in your scan
+or photo. It's only visual: the cable's grip (4c) is the same either way.
+
+A **flip** (x → −x, y → −y, i.e. 180° about z) is the same grasp, because the
+fingers are symmetric, but it gives IK a different arm pose. Try both.
 
 ### 5c. IK on a Franka-only model
 
 Look up: `newton.ik.IKSolver`, `IKObjectivePosition`, `IKObjectiveRotation`,
 `IKObjectiveJointLimit`.
 
-- Build a **second** builder with only the Franka, same base transform. IK never sees the cable.
+- Build a **second** builder with only the Franka, **base at the origin**. Then
+  one model serves every base candidate: express the target in the base frame
+  instead, `p_b = Rz(−yaw)(p − base)`, `R_b = Rz(−yaw) R`.
 - Asset: `newton.utils.download_asset("franka_emika_panda") / "urdf/fr3_franka_hand.urdf"`.
   `add_urdf(..., floating=False, enable_self_collisions=False)`.
 - The URDF already has a TCP body, **`fr3_hand_tcp`**. Target it with zero offset
@@ -250,12 +264,36 @@ Look up: `newton.ik.IKSolver`, `IKObjectivePosition`, `IKObjectiveRotation`,
 - **Verify** with `newton.eval_fk` on the IK model: compare `body_q` of
   `fr3_hand_tcp` with the target.
 
-Then in the main builder: `add_urdf` with the same transform, write the IK result
-into `builder.joint_q[:9]` (and `joint_target_q`), and zero the mass of every
-Franka body (as in 4c).
+### 5d. IK doesn't know about the table: check it yourself
 
-**Check (test scan):** IK error 0.0 mm, < 0.1°. If it's centimetres, the base
-is out of reach (move it in the JSON). The cable result does not change.
+IK only places the **TCP**. It will happily put the wrist or the hand *through the
+table* and still report 0 mm error. So check every solution against the table
+with the robot's real geometry:
+
+- For every shape of the IK model (`shape_body`, `shape_transform`, `shape_type`,
+  `shape_scale`): take its points in the body frame. A `MESH` gives
+  `shape_source[i].vertices × scale`, a `BOX` its 8 corners `±scale`. Then move
+  them by `shape_transform`.
+- After `eval_fk`, transform them by each body's pose and take the lowest `z`.
+- **Leave out `base` and `fr3_link0`.** They stand on the table, so they always read ~0.
+- Clearance = `base_z + lowest z − ground_z`.
+
+Then search: every base distance × both flips (8 poses). Keep those that reach
+(< 5 mm, < 2°), and of those the one with the **most clearance**. Warn if even the
+best one is below the table.
+
+This search only places the visual robot. It never changes the cable.
+
+Then in the main builder: `add_urdf` with the chosen base, write the joint angles
+into `builder.joint_q[:9]` (and `joint_target_q`), and zero the mass of every
+Franka body (as in 4c). In a sweep, do the search **once**: the grip is the
+same for every stiffness.
+
+**Check (test scan, `across`):** IK 0.0 mm / 0.0°, 2 of 8 poses reach, lowest
+point +141 mm above the table (`fr3_link1`).
+**Check the trap:** a grip 15 cm above the table with the cable leaving **upward
+at 45°**, grasp `along`: every pose that reaches puts `fr3_link6` ~77 mm under the
+table, and IK still says 0.0 mm. With `across`: +130 mm.
 
 ---
 
@@ -470,6 +508,7 @@ above much better than from below.
 | clamped end jumps away from the fingers | robot–cable contact pairs | exclude all Franka pairs |
 | result changes when you change segment length | per-joint stiffness passed directly | use rigidities on the `Rod` |
 | robot in a strange pose / IK error of cm | base out of reach | set `robot.base_xyz_m`. The cable is unaffected. |
+| hand or wrist under the table, IK says 0 mm | IK ignores the table; or the wrong `grasp` | 5d clearance search; match `robot.grasp` to your scan |
 | hand rotated 90° from expected | quaternion order | `(x, y, z, w)` in Newton/Warp |
 | NaN | contact too stiff for the time step | more substeps or lower `contact.ke` |
 

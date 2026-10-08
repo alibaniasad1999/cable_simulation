@@ -272,7 +272,7 @@ for the radius). The scan is taken as **Z-up, in metres**.
 | plug | `cable.plug_mass_kg` | extra mass (and inertia) on the plug segments |
 | damping | `cable.bend_damping_time_s` | `bend_damping = τ · EI / h` (same idea as the example's `2e-3 × stiffness`) |
 | grip | — | the grip segments get **zero mass** = kinematic: held at the scanned position and direction. **This is the boundary condition.** |
-| Franka | `robot.*` | `add_urdf` (FR3 + hand), placed with `newton.ik` so `fr3_hand_tcp` sits on the grip, hand z along the cable, fingers closed to the cable radius. All links zero mass → kinematic. Only visual: it doesn't touch the cable. |
+| Franka | `robot.*` | `add_urdf` (FR3 + hand), placed with `newton.ik` so `fr3_hand_tcp` sits on the grip, holding it as `robot.grasp` says, fingers closed to the cable radius. Several base distances and both hand flips are tried; the pose that reaches with the arm highest above the table wins. All links zero mass → kinematic. Only visual: it doesn't touch the cable. |
 | contacts | `contact.*` | explicit pairs: cable–table and cable–cable (more than 3 segments apart, because the scanned cable crosses itself). No robot pairs. |
 | solver | `sim.iterations`, `substeps`, `friction_epsilon` | `SolverVBD(iterations, friction_epsilon, rigid_compliant_alm=True)` |
 | settle | `sim.settle_window_s`, `settle_tol_m` | runs until no node moved more than `settle_tol_m` (0.1 mm) over `settle_window_s` (0.5 s), or `max_time_s` |
@@ -333,10 +333,27 @@ Found while testing this scene, and worth knowing for any cable lying on a table
 The `EI` you started from must come out best, with `moved` ≈ 0 for it.
 `04_pointcloud_vs_sim/README.md` shows the result of this test.
 
-### When the Franka can't reach
+### When the Franka is in the wrong place (or under the table)
 
-With `robot.base_xyz_m: null`, the base is put on the table, `base_distance_m`
-behind the grip, facing it. If IK can't reach, a warning prints the error. The
-cable result is unaffected, because the robot is only visual. Set
-`robot.base_xyz_m` (and `base_yaw_deg`) to where the real robot stands in the
-scan frame.
+IK only places the fingertip point (TCP). It doesn't know the table exists, so
+it can put the wrist or hand through the table and still report 0 mm error. The
+script therefore checks every IK solution against the table using the robot's real
+link meshes, and prints one line, for example:
+
+```
+Franka: grasp 'across', base 0.40 m from the grip: IK 0.0 mm / 0.0 deg, lowest point +141 mm above the table (fr3_link1); 2 of 8 poses tried reach the grip
+```
+
+- **`robot.grasp`** says how the fingers hold the cable. `across` (default): the
+  pads pinch it from the sides, hand above, like the reference example. `along`:
+  the cable comes straight out of the fingertips, so the hand sits behind the grip
+  on the side away from the cable. For a low grip or a cable leaving upward,
+  `along` goes under the table. Look at the gripper in your scan and pick the one
+  that matches.
+- With `robot.base_xyz_m: null`, it tries base distances 0.4–0.7 m and both hand
+  flips, and keeps the pose that reaches the grip with the arm highest above the table.
+- A **WARNING** prints if nothing reaches, or if even the best pose is below the
+  table. Then set `robot.base_xyz_m` (and `base_yaw_deg`) to where your robot really
+  stands in the scan frame, or change `robot.grasp`.
+
+None of this changes the cable result: the cable's grip is the same in every case.
