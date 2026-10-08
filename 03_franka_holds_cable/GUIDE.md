@@ -18,7 +18,9 @@ the model were perfect, nothing would move. **How far it moves is the
 disagreement, and the stiffness that moves it least is the cable's stiffness.**
 
 Newton version used for every number below: `newton 1.6.1`, `warp-lang 1.18.0`,
-CPU. Work in **metres** (the tube fit's CSV is in metres).
+CPU. Work in **metres** (the tube fit's CSV is in metres). The checks on the test
+scan use **`EI = 1e-3`, `GJ = 7.7e-4`**: put those in your test JSON (the Ethernet
+JSON now starts from 5e-3).
 
 ---
 
@@ -199,8 +201,9 @@ joint and *not* scaled, so they'd change meaning when you change `h`. Prefer
 rigidities.
 
 **Check:** after `add_rod`, look at `builder.joint_target_ke` for the first rod
-joint's 4 DOFs (stretch, shear, bend, twist). With the reference JSON:
-`[2.0e6, 7.0e5, 0.1, 0.077]`, i.e. `EA/h, kGA/h, EI/h, GJ/h`.
+joint's 4 DOFs (stretch, shear, bend, twist). With `EI = 1e-3`, `GJ = 7.7e-4`:
+`[2.0e6, 7.0e5, 0.1, 0.077]`, i.e. `EA/h, kGA/h, EI/h, GJ/h` (with the Ethernet
+JSON's 5e-3 the bend entry is 0.5).
 
 ### 4b. Mass: the capsule-cap trap
 
@@ -571,3 +574,32 @@ above much better than from below.
 - `newton/examples/cable/example_cable_twist.py`: kinematic first segment, the same zero-mass trick
 - parallel transport frames on a curve; quaternion from rotation matrix
 - capsule volume; point-to-segment distance; Hausdorff distance
+
+---
+
+## Is the stiffness right? Look at the hanging part
+
+The first Ethernet run used `EI = 1e-3`. In the viewer the simulated cable (blue)
+dropped **straight down** from the fingers, while the scan (red) **bows out
+sideways** before reaching the table. A cable can only hold that bow if it is
+stiff enough. So the hanging part tells you at a glance that the simulation is
+too soft. The lying part can't tell you: friction holds it wherever it started.
+
+Two honest ways to get `EI`, from least to most fitting:
+
+1. **Measure it, then compare (validation, no fitting).** Table-edge test with
+   your cable: clamp it so `L` sticks out horizontally, measure the tip drop `δ`,
+   `EI = w L⁴ / (8 δ)` with `w` = weight per metre × 9.81 (~0.44 N/m). Keep
+   `δ < 0.15 L` (small deflection), and repeat for `L` = 10, 15, 20 cm: the three
+   values must agree. Put the result in the JSON and run once. The `hanging` error
+   then says how good the *model* is.
+2. **Sweep and pick (identification).** `--sweep` runs 5 complete simulations
+   (1e-3 to 2e-2) and the comparison reports which one is closest. That uses the
+   scan to *choose* `EI`, so you then need a second scan, in another pose, to test it.
+
+If even the stiffest value can't make the hanging part bow like the scan, the
+bow isn't elasticity. Solid-copper Ethernet keeps a **permanent curl** from the
+spool (plastic memory), and a straight rest shape can never reproduce that. Lay
+the cable loose on the table: if it doesn't lie straight, its rest shape isn't
+straight either.
+
