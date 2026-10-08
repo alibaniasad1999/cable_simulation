@@ -321,6 +321,81 @@ def quat_rotate_z(q):
 # =============================================================================
 # 3. The cable path: grip + scan + plug
 # =============================================================================
+def segment_distances(A0, A1, B0, B1):
+    """Closest distance between segments [A0, A1] and [B0, B1] (arrays of pairs), and the closest points."""
+    d1, d2, w = A1 - A0, B1 - B0, A0 - B0
+    a, e = (d1 * d1).sum(-1), (d2 * d2).sum(-1)
+    b, c, f = (d1 * d2).sum(-1), (d1 * w).sum(-1), (d2 * w).sum(-1)
+    den = a * e - b * b
+    s = np.where(den > 1e-18, np.clip((b * f - c * e) / np.maximum(den, 1e-18), 0.0, 1.0), 0.0)
+    t = (b * s + f) / e
+    s = np.where(t < 0.0, np.clip(-c / a, 0.0, 1.0), np.where(t > 1.0, np.clip((b - c) / a, 0.0, 1.0), s))
+    t = np.clip(t, 0.0, 1.0)
+    pa, pb = A0 + s[:, None] * d1, B0 + t[:, None] * d2
+    return np.linalg.norm(pa - pb, axis=1), pa, pb, s, t
+
+
+def separate_crossings(X, r, margin=0.0003, sigma=0.02, keep_ends=0.02, max_rounds=12):
+    """Make the start shape physically possible where the cable crosses itself.
+
+    A real crossing has one strand lying ON the other: centres one diameter
+    (2r) apart. The tube fit can put them closer (the touching sides are hidden
+    from the scanner). Overlapping strands make self-contact push them apart
+    for as long as the simulation runs, so the cable jumps and never settles.
+
+    Here, where two strands are closer than 2r: at a crossing, the upper strand
+    is lifted by exactly the missing amount; two strands side by side are
+    pushed apart sideways. The change is a smooth bump (Gaussian, sigma 2 cm
+    along the cable) and nodes within `keep_ends` of either end never move,
+    so the grip and plug boundary conditions are untouched.
+    Returns the new nodes and a list of what was changed.
+    """
+    X = X.copy()
+    s = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(X, axis=0), axis=1))])
+    movable = np.clip(np.minimum(s - keep_ends, s[-1] - keep_ends - s) / 0.01, 0.0, 1.0)
+    need = 2.0 * r + margin
+    m = len(X) - 1
+    smid = 0.5 * (s[:-1] + s[1:])
+    I, J = np.triu_indices(m, 1)
+    far = np.abs(smid[J] - smid[I]) > 6.0 * r  # neighbours along the cable always "touch"
+    I, J = I[far], J[far]
+    changes = []
+    for _ in range(max_rounds):
+        d, pa, pb, ta, tb = segment_distances(X[I], X[I + 1], X[J], X[J + 1])
+        bad = np.flatnonzero(d < need - 1e-5)
+        if len(bad) == 0:
+            break
+        lift = np.zeros(len(X))
+        push = np.zeros((len(X), 3))
+        for k in bad:
+            i, j = I[k], J[k]
+            si, sj = s[i] + ta[k] * (s[i + 1] - s[i]), s[j] + tb[k] * (s[j + 1] - s[j])
+            gap = pa[k] - pb[k]
+            nz = gap[2] / d[k] if d[k] > 1e-6 else 0.0
+            if d[k] < 5e-4 or abs(nz) >= 0.3:  # a crossing: lift the upper strand
+                upper_s = si if (pa[k][2] > pb[k][2] or (abs(pa[k][2] - pb[k][2]) < 1e-6 and si > sj)) else sj
+                horiz2 = d[k] ** 2 * (1.0 - nz * nz)
+                delta = -d[k] * abs(nz) + np.sqrt(max(need ** 2 - horiz2, 0.0))
+                bump = delta * np.exp(-0.5 * ((s - upper_s) / sigma) ** 2) * movable
+                lift = np.maximum(lift, bump)
+                changes.append(("lift", upper_s, delta))
+            else:  # side by side: push both apart, horizontally
+                n = gap.copy()
+                n[2] = 0.0
+                n /= max(np.linalg.norm(n), 1e-9)
+                half = 0.5 * (need - d[k])
+                for s0, sign in ((si, 1.0), (sj, -1.0)):
+                    bump = half * np.exp(-0.5 * ((s - s0) / sigma) ** 2) * movable
+                    stronger = bump > np.linalg.norm(push, axis=1)
+                    push[stronger] = sign * bump[stronger, None] * n
+                changes.append(("push", si, need - d[k]))
+        X[:, 2] += lift
+        X += push
+    d = segment_distances(X[I], X[I + 1], X[J], X[J + 1])[0]
+    left = float(max(0.0, need - margin - d.min())) if len(d) else 0.0
+    return X, changes, left
+
+
 def plan_cable(scan, cable_cfg, sim_cfg, init_mode):
     """Segment layout and the starting centreline of the simulated cable.
 
@@ -331,6 +406,19 @@ def plan_cable(scan, cable_cfg, sim_cfg, init_mode):
     """
     X = scan["nodes"]
     L_scan = scan["s"][-1]
+    separation = None
+    if init_mode == "scan" and sim_cfg.get("separate_crossings", True):
+        X, changes, left = separate_crossings(X, scan["radius"])
+        if changes:
+            lifts = [c for c in changes if c[0] == "lift"]
+            pushes = [c for c in changes if c[0] == "push"]
+            biggest = max(c[2] for c in changes)
+            where = sorted({round(1000 * c[1], -1) for c in changes})
+            separation = {"lifted": len(lifts), "pushed": len(pushes), "max_change_mm": round(1000 * biggest, 2),
+                          "near_s_mm": where[:8], "overlap_left_mm": round(1000 * left, 2)}
+            print(f"crossing fix: strands overlapped in the scan; moved apart by up to {1000 * biggest:.1f} mm "
+                  f"near s = {', '.join(f'{w:.0f}' for w in where[:6])} mm"
+                  + (f" (still {1000 * left:.1f} mm overlap: too close to an end)" if left > 1e-4 else ""))
     grip = float(cable_cfg["grip_length_m"])
     h0 = float(sim_cfg["segment_length_m"])
     n_grip = max(1, round(grip / h0))
@@ -348,6 +436,10 @@ def plan_cable(scan, cable_cfg, sim_cfg, init_mode):
 
     if init_mode == "scan":
         # Grip straight into the fingers, the scanned curve, the plug straight on.
+        # If the crossing fix made the curve a little longer, the plug takes it
+        # back, so the total stays n_seg * h (no pre-stretch).
+        L_curve = float(np.linalg.norm(np.diff(X, axis=0), axis=1).sum())
+        plug = n_seg * h - grip - L_curve
         dense = np.vstack([
             grip_start[None],
             X,
@@ -379,7 +471,72 @@ def plan_cable(scan, cable_cfg, sim_cfg, init_mode):
         "grip_tangent": t0,
         "grip_center": X[0] - 0.5 * grip * t0,
         "length_total": n_seg * h,
+        "crossing_fix": separation,
     }
+
+
+def quat_mul(a, b):
+    """Quaternion product a*b, (x, y, z, w), arrays of shape (..., 4)."""
+    ax, ay, az, aw = np.moveaxis(a, -1, 0)
+    bx, by, bz, bw = np.moveaxis(b, -1, 0)
+    return np.stack([aw * bx + ax * bw + ay * bz - az * by,
+                     aw * by - ax * bz + ay * bw + az * bx,
+                     aw * bz + ax * by - ay * bx + az * bw,
+                     aw * bw - ax * bx - ay * by - az * bz], axis=-1)
+
+
+def quat_rotvec(q):
+    """Rotation vector (axis * angle) of quaternions (x, y, z, w)."""
+    q = np.where(q[..., 3:4] < 0.0, -q, q)
+    n = np.linalg.norm(q[..., :3], axis=-1, keepdims=True)
+    angle = 2.0 * np.arctan2(n, q[..., 3:4])
+    return np.where(n > 1e-12, q[..., :3] / np.maximum(n, 1e-12) * angle, 2.0 * q[..., :3])
+
+
+def relax_twist(q_start, h, kappa, phi_deg, EI, GJ, n_fixed):
+    """Roll of each segment about its own axis that a curled cable at rest would have.
+
+    A centreline scan shows the cable's shape but not how it is twisted. For a
+    straight-rest cable that doesn't matter; for a curled one it does: the curl
+    points somewhere around the cable, and the twist decides where. The scanned
+    cable is at rest, so its twist is the one with the least energy for that
+    shape. Minimise, over the roll angles theta_i (the first n_fixed, in the
+    gripper, stay 0):
+
+        E = sum_i EI/h |R(-theta_i) b_i - k|^2  +  GJ/h (theta_{i+1} - theta_i)^2
+
+    b_i = bend between segments i and i+1 in the start frames (2-D, parallel
+    transport has no twist), k = kappa*h*(cos phi, sin phi) the rest bend.
+    Returns theta (n_seg,), in radians.
+    """
+    from scipy.optimize import minimize
+
+    n = len(q_start)
+    rel = quat_mul(q_start[:-1] * np.array([-1.0, -1.0, -1.0, 1.0]), q_start[1:])
+    b = quat_rotvec(rel)[:, :2]
+    phi = np.radians(phi_deg)
+    k = kappa * h * np.array([np.cos(phi), np.sin(phi)])
+    wb, wt = EI / h, GJ / h
+    free = np.arange(n_fixed, n)
+
+    def energy(x):
+        th = np.zeros(n)
+        th[free] = x
+        c, s_ = np.cos(th[:-1]), np.sin(th[:-1])
+        lx, ly = c * b[:, 0] + s_ * b[:, 1], -s_ * b[:, 0] + c * b[:, 1]  # bend seen in the rolled frame
+        dx, dy = lx - k[0], ly - k[1]
+        dt = np.diff(th)
+        e = 0.5 * (wb * (dx * dx + dy * dy).sum() + wt * (dt * dt).sum())
+        g = np.zeros(n)
+        g[:-1] += wb * (dx * ly - dy * lx)
+        g[:-1] -= wt * dt
+        g[1:] += wt * dt
+        return e, g[free]
+
+    res = minimize(energy, np.zeros(len(free)), jac=True, method="L-BFGS-B", options={"maxiter": 5000})
+    theta = np.zeros(n)
+    theta[free] = res.x
+    return theta
 
 
 def segment_poses(nodes):
@@ -647,14 +804,20 @@ def build_model(cfg, scan, plan, bend_scale, device, placement=None):
     # --- Cable ----------------------------------------------------------------
     EI = cab["bend_rigidity_EI_Nm2"] * bend_scale
     GJ = cab["twist_rigidity_GJ_Nm2"] * bend_scale
-    # Straight rest shape. Newton turns the section rigidities into per-joint
-    # stiffness (rigidity / segment length) by itself.
-    rod = newton.Rod.create_straight(
-        start=wp.vec3(*plan["nodes"][0]), direction=wp.vec3(*plan["grip_tangent"]),
-        length=plan["length_total"], segment_count=plan["n_seg"], radius=r,
-        stretch_rigidity=cab["stretch_rigidity_EA_N"], shear_rigidity=cab["shear_rigidity_kGA_N"],
-        bend_rigidity=EI, twist_rigidity=GJ,
-    )
+    kappa = float(cab.get("rest_curvature_per_m", 0.0))
+    phi = float(cab.get("rest_curl_direction_deg", 0.0))
+    rigidities = dict(stretch_rigidity=cab["stretch_rigidity_EA_N"], shear_rigidity=cab["shear_rigidity_kGA_N"],
+                      bend_rigidity=EI, twist_rigidity=GJ)
+    # The rod is built in its REST shape (VBD reads the rest bend from this
+    # pose); run() then puts it in its start pose. Newton turns the section
+    # rigidities into per-joint stiffness (rigidity / segment length) by itself.
+    if kappa > 0.0:
+        points, quats = curled_rest_shape(plan["n_seg"], h, kappa, phi)
+        rod = newton.Rod(points, quaternions=quats, radius=r, **rigidities)
+    else:
+        rod = newton.Rod.create_straight(
+            start=wp.vec3(*plan["nodes"][0]), direction=wp.vec3(*plan["grip_tangent"]),
+            length=plan["length_total"], segment_count=plan["n_seg"], radius=r, **rigidities)
     # Newton's mass = capsule volume x density, and each capsule has two
     # hemispherical caps on top of its length h. Correct the density so the mass
     # per metre is the real one.
@@ -696,12 +859,38 @@ def build_model(cfg, scan, plan, bend_scale, device, placement=None):
         "plug_segments": plan["n_plug"], "plug_length_m": round(plan["plug_length"], 4),
         "length_total_m": round(plan["length_total"], 4), "radius_m": r,
         "EI_Nm2": EI, "GJ_Nm2": GJ, "bend_scale": bend_scale,
+        "rest_curvature_per_m": kappa, "rest_curl_direction_deg": phi,
+        "crossing_fix": plan.get("crossing_fix"),
         "per_joint_bend_stiffness_Nm_per_rad": EI / h,
         "mass_free_cable_kg": round(float(masses[cable_bodies[plan["n_grip"]:]].sum()), 5),
         "plug_end_fixed": fix_plug,
         "ground_z_m": scan["ground_z"], "robot": robot_info,
     }
     return model, cable_bodies, franka_bodies, ground_shape, info, placement
+
+
+def curled_rest_shape(n_seg, h, kappa, phi_deg):
+    """Points and frames of a rod whose natural (rest) shape has constant curvature.
+
+    Real Ethernet cable remembers the coil it was wound in. Here every segment
+    is turned by kappa*h about the same axis of its own frame,
+    a = (cos phi, sin phi, 0), so the rest shape is a circle of radius 1/kappa
+    and carries no twist. phi is measured in the cable's frame at the gripper
+    (the start frame there: Newton's parallel transport, roll 0): it says to
+    which side the cable wants to curl. Only the rest shape changes; the start
+    pose still follows the scan, with its twist relaxed for this curl
+    (relax_twist), because a scan cannot show twist.
+    """
+    phi = np.radians(phi_deg)
+    a = np.array([np.cos(phi), np.sin(phi), 0.0])
+    K = np.array([[0.0, -a[2], a[1]], [a[2], 0.0, -a[0]], [-a[1], a[0], 0.0]])
+    quats, points = [], [np.zeros(3)]
+    for i in range(n_seg):
+        t = kappa * h * (i + 0.5)
+        R = np.eye(3) + np.sin(t) * K + (1.0 - np.cos(t)) * K @ K  # rotation by t about a
+        quats.append(quat_from_matrix(R))
+        points.append(points[-1] + h * R[:, 2])  # segment along its frame's +Z
+    return np.array(points), np.array(quats)
 
 
 def make_kinematic(builder, b):
@@ -761,8 +950,18 @@ def run(cfg, scan, bend_scale, out_dir, viewer_kind="null", cache=None):
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)  # places the Franka; rod bodies untouched
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_1)
 
-    # Start pose of the cable (the model itself keeps the straight rest shape).
+    # Start pose of the cable (the model itself keeps its rest shape).
     p, q = segment_poses(plan["nodes"])
+    kappa = float(cfg["cable"].get("rest_curvature_per_m", 0.0))
+    if kappa > 0.0:  # a curled cable: start with the twist it has at rest in this shape
+        theta = relax_twist(q, plan["h"], kappa, float(cfg["cable"].get("rest_curl_direction_deg", 0.0)),
+                            info["EI_Nm2"], info["GJ_Nm2"], plan["n_grip"])
+        q = quat_mul(q, np.column_stack([np.zeros((len(theta), 2)), np.sin(0.5 * theta), np.cos(0.5 * theta)]))
+        info["start_twist_deg"] = {"min": round(float(np.degrees(theta.min())), 1),
+                                   "max": round(float(np.degrees(theta.max())), 1),
+                                   "at_plug": round(float(np.degrees(theta[-1])), 1)}
+        print(f"start twist (equilibrium for the curl): {np.degrees(theta[-1]):+.0f} deg at the plug end "
+              f"(range {np.degrees(theta.min()):+.0f} .. {np.degrees(theta.max()):+.0f} deg)")
     warn_overlap(p, plan, scan["radius"])
     for st in (state_0, state_1):
         bq = st.body_q.numpy()

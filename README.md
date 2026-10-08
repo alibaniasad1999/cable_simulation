@@ -38,6 +38,8 @@ python 03_franka_holds_cable/check_stiffness.py --config configs/ethernet_cat6.j
 python 03_franka_holds_cable/ethernet_scene.py --config configs/ethernet_cat6.json --sweep
 # 3. compare with the scan:              results/ethernet_cat6/scan/compare/
 python 04_pointcloud_vs_sim/compare_to_scan.py --config configs/ethernet_cat6.json
+# 4. best match (Ubuntu, lots of cores or a GPU): fit EI + natural curl -> results/ethernet_cat6_fit/best_config.json
+python 04_pointcloud_vs_sim/fit_to_scan.py --config configs/ethernet_cat6.json --workers 16
 ```
 
 **Write it yourself:** [`03_franka_holds_cable/GUIDE.md`](03_franka_holds_cable/GUIDE.md):

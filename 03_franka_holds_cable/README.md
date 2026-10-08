@@ -274,16 +274,33 @@ usually *not* z-up. The script measures which way is up from the cable itself
 | orient the scan | `scan.gripper_end` | node 0 = the gripper end (`auto`: the higher end; the other end lies on the table) |
 | table | `scan.ground_z_m` | `add_ground_plane(height=...)`; `null` = lowest scanned centreline point − radius |
 | cable length | `cable.grip_length_m`, `cable.plug_length_m` | grip (inside the fingers) + scanned length + plug. Arc length `s = 0` is the first scanned node. |
+| crossing fix | `sim.separate_crossings` | where the scanned cable crosses itself closer than one diameter, the upper strand is lifted to exactly one diameter (smooth 2 cm bump, ends never move). Printed as `crossing fix: ...`. Without it the cable jumps and never settles. |
 | segments | `sim.segment_length_m` | adjusted so the grip is a whole number of segments (10 mm → 2 grip segments) |
 | elasticity | `cable.*_rigidity_*` | `newton.Rod.create_straight(..., stretch_rigidity=EA, shear_rigidity=kGA, bend_rigidity=EI, twist_rigidity=GJ)`. With rigidities, **Newton divides by the segment length itself** (`EI / h` per joint). **EA and kGA are kept moderate (200 N, 20 N) on purpose**: much stiffer values make VBD bend the cable ~10× too easily (see below). |
 | mass | `cable.mass_per_length_kg_m` | `ShapeConfig(density=...)`. Each capsule has two round end caps on top of its length, which adds ~50 % volume at 10 mm segments; the density is corrected so the mass per metre is exact (printed in `meta.json` as `mass_free_cable_kg`). |
 | plug | `cable.plug_mass_kg`, `cable.fix_plug_end` | `fix_plug_end: true` (default): the plug segments are held still at their scanned place, so the far end can't slide away. `false`: they're free and carry the plug mass. |
+| natural curl | `cable.rest_curvature_per_m`, `cable.rest_curl_direction_deg` | 0 (default): the cable wants to be straight. Above 0: its rest shape is a coil of radius 1/value, curling to the given side. Ethernet cable keeps the coil from its box, and a straight model can't hold a loop the way it does. Usually found with `fit_to_scan.py`. |
+| hidden twist | (automatic when curl > 0) | a scan can't show how the cable is twisted, and with a curl the twist decides where the curl points. The start twist is set to the one with the least energy for the scanned shape (`relax_twist`, printed as `start twist ...`). |
 | damping | `cable.bend_damping_time_s` | `bend_damping = τ · EI / h` (same idea as the example's `2e-3 × stiffness`) |
 | grip | — | the grip segments get **zero mass** = kinematic: held at the scanned position and direction. **This is the boundary condition.** |
 | Franka | `robot.*` | `add_urdf` (FR3 + hand), placed with `newton.ik` so `fr3_hand_tcp` sits on the grip, holding it as `robot.grasp` says, fingers closed to the cable radius. Several base distances and both hand flips are tried; the pose that reaches with the arm highest above the table wins. All links zero mass → kinematic. Only visual: it doesn't touch the cable. |
 | contacts | `contact.*` | explicit pairs: cable–table and cable–cable (more than 3 segments apart, because the scanned cable crosses itself). No robot pairs. |
 | solver | `sim.iterations`, `substeps`, `friction_epsilon` | `SolverVBD(iterations, friction_epsilon, rigid_compliant_alm=True)` |
 | settle | `sim.settle_window_s`, `settle_tol_m` | runs until no node moved more than `settle_tol_m` (0.1 mm) over `settle_window_s` (0.5 s), or `max_time_s` |
+
+### Getting the best match: `fit_to_scan.py`
+
+With a powerful Ubuntu machine, let the computer find the properties:
+
+```bash
+python 04_pointcloud_vs_sim/fit_to_scan.py --config configs/ethernet_cat6.json --workers 16            # CPU cores
+python 04_pointcloud_vs_sim/fit_to_scan.py --config configs/ethernet_cat6.json --workers 8 --device cuda:0
+```
+
+It searches EI, the curl strength and its direction, running many simulations
+at once, and writes `best_config.json`. Watch the result with
+`ethernet_scene.py --config results/ethernet_cat6_fit/best_config.json --viewer gl`.
+Details and how to read it: `04_pointcloud_vs_sim/README.md`, *Fitting*.
 
 ### The key trick: rest shape straight, start pose curved
 

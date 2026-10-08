@@ -207,6 +207,41 @@ segments, plug 39.1 mm, total length 1.080 m.
 
 ---
 
+### 3b. Make crossings physically possible
+
+Where the scanned cable crosses itself, one strand **lies on** the other: their
+centres are one diameter (2r) apart. The tube fit can't see the touching sides and
+may put the centrelines closer. Start the simulation like that and self-contact
+pushes the strands apart **for as long as it runs**: the cable jumps by several mm
+again and again and never settles. It's worst with the plug end fixed (4c),
+because the free end can no longer slide them apart.
+
+Fix the start shape, on the scan nodes, before planning:
+
+1. Closest distance between every pair of polyline segments more than 6r apart
+   along the cable (closer pairs are neighbours, which always "touch"). This is the
+   classic segment–segment distance (Ericson, *Real-Time Collision Detection* §5.1.9).
+   Vectorise it over all pairs.
+2. For each pair closer than `2r + 0.3 mm`:
+   - **crossing** (the gap is mostly vertical, or zero): lift the **upper** strand
+     (higher closest point; a tie goes to the later one) by exactly what's
+     missing: `δ = −d·|n_z| + √((2r+m)² − d²(1−n_z²))`;
+   - **side by side** (gap mostly horizontal): push both apart sideways by half.
+3. Apply each as a smooth Gaussian bump along the cable (σ = 2 cm). Take the
+   per-node **maximum** over overlapping pairs, not the sum: one crossing involves
+   several segment pairs. Never move nodes within 2 cm of the ends (the grip and
+   plug boundary conditions).
+4. Repeat until nothing overlaps, then let the plug take back the extra length the
+   bump added, so the total stays `n_seg·h` (no pre-stretch).
+
+Print what you changed. It's a correction to the data, so say so.
+
+**Check:** on the Stage 0 test scan *without* the lift (strands at the same height),
+the fix reports ~7.5 mm near s ≈ 510–590 mm. With the plug fixed, the run then
+settles at t ≈ 12 s. Without the fix it was still jumping 43 mm at 20 s.
+
+---
+
 ## Stage 4. Build the cable in Newton
 
 Look up: `newton.Rod`, `newton.Rod.create_straight`, `ModelBuilder.add_rod`
@@ -316,6 +351,72 @@ at EI 5e-3, and 1.06 at EI 2e-2.
 
 ---
 
+### 4f. Natural curl (rest curvature)
+
+Ethernet cable remembers the coil it was wound in. A model whose rest shape is
+straight can never hold a loop the way it does, whatever EI you choose. So allow a
+curled rest shape: constant curvature `κ` [1/m] (coil radius `1/κ`) about a fixed
+axis of the cable's own frame, `a = (cos φ, sin φ, 0)`. `φ` says to which side it
+curls.
+
+Build the rod in that rest shape, with explicit frames:
+
+```
+R_i      = rotation by κ·h·(i + ½) about a           (Rodrigues)
+x_{i+1}  = x_i + h · R_i ẑ                            (segment along its frame's +Z)
+Rod(points = x, quaternions = quat(R_i), radius, rigidities...)
+```
+
+Consecutive frames then differ by the same rotation `κh` about `a`. That's
+constant curvature with no twist, and VBD stores it as the rest bend. The start pose
+(Stage 6) is unchanged: the cable still starts on the scan. Only what it *wants* to
+be changes. `φ` is relative to the start frames (Newton's parallel transport from
+the gripper), so it's a fit parameter, not something you measure with a protractor.
+
+**Check:** gravity off, first 2 segments clamped, start straight, `κ = 10 /m`. It must
+curl into a flat circle of radius 100 mm (I get 100.1 mm), and `φ = 90°` must turn the
+circle's plane by 90°.
+
+### 4g. The hidden twist (needed as soon as κ > 0)
+
+A centreline scan shows the cable's *shape* but not how it is **twisted** about its
+own axis. For a straight-rest cable that doesn't matter. For a curled one it decides
+where the curl points, everywhere along the cable. Starting with Newton's
+parallel-transport frames means assuming *zero* twist, which is arbitrary, and it
+made my fit test fail badly: the exact true values scored **28.5 mm** while a wrong
+combination scored 3.6 mm.
+
+The scanned cable is at rest, so its twist is the one with the **least energy for
+that shape**. Find it before starting. Keep the positions and turn each segment by a
+roll angle `θ_i` about its own axis (the grip segments stay at 0):
+
+```
+E(θ) = Σ_i  EI/h · |R(−θ_i) b_i − k|²  +  GJ/h · (θ_{i+1} − θ_i)²
+
+b_i = bend between segments i and i+1 in the parallel-transport frames
+      (rotation vector of q_i⁻¹ q_{i+1}, its x-y part)
+k   = κ h (cos φ, sin φ)       the rest bend
+```
+
+Minimise with L-BFGS (`scipy.optimize.minimize(..., jac=True)`), using the analytic
+gradient `∂/∂θ_i: EI/h (d_x l_y − d_y l_x) − GJ/h (θ_{i+1} − θ_i) + GJ/h (θ_i − θ_{i−1})`,
+where `l = R(−θ_i) b_i` and `d = l − k`. Then start from `q_i ⊗ (rotation θ_i about z)`.
+
+**Checks:**
+- Give it the rest circle itself as the start curve: the bend afterwards must equal
+  the rest bend (I get 2e-6 rad, against 0.08 rad per joint).
+- Gradient against finite differences: ~1e-7 relative.
+- A cable at equilibrium (simulate, restart from its own result, let it settle again):
+  restarting from that, with the true values, must stay put (2.0 mm RMS, 4 mm moved).
+
+**The limit:** this assumes the twist is at equilibrium. The part lying on the table
+keeps whatever twist friction held when it came to rest (history again), and a
+**fixed** plug end holds its roll. So with real data, expect the fitted curl and EI
+to be *effective* values that make the shape match, not necessarily the cable's
+true ones. Test them on a second scan.
+
+---
+
 ## Stage 5. The Franka: kinematic, placed with IK
 
 The robot is only there to *look* right. The cable's boundary condition is the grip
@@ -421,7 +522,7 @@ You want the cable to **start** on the scanned curve but **want to be straight**
 
 - **Rest shape** = the pose at `finalize()`. `SolverVBD` computes each rod joint's
   rest bend and twist from `model.body_q` when the solver is created. Your rod was
-  created straight, so its rest shape is straight.
+  created straight (or curled, 4f), so that's what it wants to be.
 - **Start pose** = the `State`. Overwrite `state_0.body_q` and `state_1.body_q`
   for the cable bodies after `finalize()`, and set their `body_qd` to zero.
 
@@ -623,6 +724,46 @@ direction (Stage 3). Run it after every change to the solver settings.
 
 ---
 
+## Stage 13. Fit the cable to the scan
+
+Once the self-test passes, let a search choose the properties. It's a fit: the scan
+picks the values, so test the result on a second scan afterwards.
+
+**What to search:** `log10 EI` (GJ keeps its ratio to EI), and the curl `κ ≥ 0`,
+`φ ∈ [0°, 360°)` (periodic; with `κ = 0`, `φ` means nothing, so set it to 0). Keep
+the mass fixed at the weighed value: from a still cable only *EI ÷ weight* can be
+found, because doubling both gives the same shape.
+
+**Score:** RMS of the Stage 10 *shape* distance, over the whole cable or only its
+hanging part. Add 1 mm to runs that didn't settle, and give `inf` to runs that blew
+up (catch the exception: a bad candidate must not stop the search).
+
+**Search:**
+1. **Coarse grid**, all in parallel: EI geometric from EI₀/8 to EI₀·8 × κ ∈ {0, 3, 6, 9}
+   × 6 directions.
+2. **Pattern search** from the best: for each parameter try ± one step (plus the
+   κ–φ diagonals), all in parallel. Move if the best is better by more than 0.05 mm
+   (one run's noise), else halve the steps. Start steps: 0.15 decades, 1.5 /m, 30°;
+   stop below 0.01, 0.1, 3°.
+
+**Parallel:** a `ProcessPoolExecutor` with the **`spawn`** start method. Never `fork`
+a process that may hold CUDA or Warp state. Each worker loads the scene module and
+the scan once (initializer). Robot off: it's only visual. Save every result to a CSV
+as it arrives, keyed by the rounded parameters, so a rerun skips what's done.
+
+**Check (known answer):** make a truth with the reference JSON, but EI = 3e-3,
+κ = 6 /m, φ = 60°. Settle it, restart it once from its own result (so its twist is at
+equilibrium, 4g), and fit that, starting from EI = 5e-3, κ = 0, with grid directions
+0/90/180/270°. After one refinement round I get EI 3.5e-3, κ 6.5, φ 60° at 2.05 mm,
+where the truth itself scores 2.0 mm. Full table: `04_pointcloud_vs_sim/README.md`
+(*Fitting*).
+
+**Smoke test** (does the script run end to end?): 1 s simulations,
+`--grid-ei 2 --grid-curl 0,5 --grid-dir 2 --max-rounds 1`. That's 16 runs in ~2 min on
+4 cores, and all outputs appear. Run it again: it must say `resuming: 16 runs`.
+
+---
+
 ## When something goes wrong
 
 | symptom | likely cause | fix |
@@ -641,7 +782,8 @@ direction (Stage 3). Run it after every change to the solver settings.
 | hand rotated 90° from expected | quaternion order | `(x, y, z, w)` in Newton/Warp |
 | NaN | contact too stiff for the time step | more substeps or lower `contact.ke` |
 | cable floppy like jelly, sags far more than its EI | EA / kGA far above bending; too few substeps | Stage 4e: `check_stiffness.py`; EA ~200, kGA ~20, 20 substeps |
-| bursts of motion that never settle (self-contact on) | strands overlap in the start shape | crossings must be one diameter apart (Stage 0, Stage 8 note) |
+| bursts of motion that never settle (self-contact on) | strands overlap in the start shape | crossing fix, Stage 3b |
+| no EI makes the loop / hanging part match; error the same everywhere | the cable's natural curl | rest curvature, Stage 4f, and fit it (Stage 13) |
 | true EI doesn't win the self-test; hanging part off everywhere | grip direction estimated by averaging | use the tube fit's tangents (Stage 3) |
 | up tilted by 1–2° on a stiff cable | it rests on the table along a line only | Stage 2b limit: set `scan.up` from the table |
 
