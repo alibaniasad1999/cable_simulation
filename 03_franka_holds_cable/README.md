@@ -239,3 +239,104 @@ the mouse across both solvers). For option K, use the plain viewer calls:
 - Option K: grasp pose written once per frame instead of every substep (jitter).
 - Option C: fingers commanded fully shut with high force, so the cable gets squeezed through.
 - Forgetting `prepare_contacts` or computing gripper–cable contacts twice.
+
+---
+
+## The Ethernet scene (working code)
+
+[`ethernet_scene.py`](ethernet_scene.py) is Option K applied to your scanned
+Ethernet cable. **To write it yourself from scratch, follow [GUIDE.md](GUIDE.md)**
+(stages, Newton calls, and the numbers to expect at each step). Every number comes from [`configs/ethernet_cat6.json`](../configs/ethernet_cat6.json)
+(the `_...` keys in that file explain each value).
+
+```bash
+python 03_franka_holds_cable/ethernet_scene.py --config configs/ethernet_cat6.json               # one run
+python 03_franka_holds_cable/ethernet_scene.py --config configs/ethernet_cat6.json --viewer gl   # watch it
+python 03_franka_holds_cable/ethernet_scene.py --config configs/ethernet_cat6.json --sweep       # all EI values
+python 03_franka_holds_cable/ethernet_scene.py --config configs/ethernet_cat6.json --bend-scale 2
+```
+
+Input: the tube-fit output `results/Ethernet_tube_fit/centerline.csv` (+ `summary.json`
+for the radius). The scan is taken as **Z-up, in metres**.
+
+### What the script builds, step by step
+
+| step | JSON | Newton call / what happens |
+|---|---|---|
+| orient the scan | `scan.gripper_end` | node 0 = the gripper end (`auto`: the higher end; the other end lies on the table) |
+| table | `scan.ground_z_m` | `add_ground_plane(height=...)`; `null` = lowest scanned centreline point − radius |
+| cable length | `cable.grip_length_m`, `cable.plug_length_m` | grip (inside the fingers) + scanned length + plug. Arc length `s = 0` is the first scanned node. |
+| segments | `sim.segment_length_m` | adjusted so the grip is a whole number of segments (10 mm → 2 grip segments) |
+| elasticity | `cable.*_rigidity_*` | `newton.Rod.create_straight(..., stretch_rigidity=EA, shear_rigidity=kGA, bend_rigidity=EI, twist_rigidity=GJ)`. With rigidities, **Newton divides by the segment length itself** (`EI / h` per joint), so changing the segment length doesn't change the cable. |
+| mass | `cable.mass_per_length_kg_m` | `ShapeConfig(density=...)`. Each capsule has two round end caps on top of its length, which adds ~50 % volume at 10 mm segments; the density is corrected so the mass per metre is exact (printed in `meta.json` as `mass_free_cable_kg`). |
+| plug | `cable.plug_mass_kg` | extra mass (and inertia) on the plug segments |
+| damping | `cable.bend_damping_time_s` | `bend_damping = τ · EI / h` (same idea as the example's `2e-3 × stiffness`) |
+| grip | — | the grip segments get **zero mass** = kinematic: held at the scanned position and direction. **This is the boundary condition.** |
+| Franka | `robot.*` | `add_urdf` (FR3 + hand), placed with `newton.ik` so `fr3_hand_tcp` sits on the grip, hand z along the cable, fingers closed to the cable radius. All links zero mass → kinematic. Only visual: it doesn't touch the cable. |
+| contacts | `contact.*` | explicit pairs: cable–table and cable–cable (more than 3 segments apart, because the scanned cable crosses itself). No robot pairs. |
+| solver | `sim.iterations`, `substeps`, `friction_epsilon` | `SolverVBD(iterations, friction_epsilon, rigid_compliant_alm=True)` |
+| settle | `sim.settle_window_s`, `settle_tol_m` | runs until no node moved more than `settle_tol_m` (0.1 mm) over `settle_window_s` (0.5 s), or `max_time_s` |
+
+### The key trick: rest shape straight, start pose curved
+
+`init: "scan"` starts the cable **on the scanned curve** but keeps its **rest shape
+straight**:
+
+1. The rod is created straight (`Rod.create_straight`). VBD reads the rest
+   bend/twist from `model.body_q`, the pose at `finalize()`, so the cable "wants"
+   to be straight, like a real cable.
+2. After `finalize()`, only the **state** (`state_0.body_q`, `state_1.body_q`) is
+   overwritten with segment poses along the scan. The frames come from
+   `newton.Rod(nodes).quaternions` (parallel transport, so no twist is added).
+   VBD's first step takes its velocity history from this state, so there's no jump.
+3. `newton.eval_fk` places the Franka but **never touches rod bodies**, so the
+   order of these calls is safe.
+
+So the run answers: *"starting exactly where the real cable is, where does this
+cable model go?"* If the model were perfect, it would stay put (`moved ≈ 0`).
+
+`init: "drop"` instead starts the free cable straight and horizontal at grip
+height and lets it fall. The hanging part should end up the same. The part lying
+on the table won't, because with friction it depends on *how* the cable came
+down. That's why `scan` is the default for the comparison.
+
+### Two solver settings that matter for a *static* comparison
+
+Found while testing this scene, and worth knowing for any cable lying on a table:
+
+- **`friction_epsilon`.** VBD smooths friction below this sliding speed. With
+  Newton's default (`1e-2` m/s), a cable lying on the table never really stops: it
+  creeps about 1 mm/s, forever, so the final shape depends on how long you wait.
+  With `1e-4` it sticks: drift falls from ~1 mm to ~0.03 mm per 0.5 s. More
+  iterations or more damping did **not** fix it. This setting did.
+- **Settling by shape, not speed.** Even at rest, VBD body velocities carry
+  ~1–5 mm/s of iteration noise (a few µm per 1/600 s step), on random segments.
+  A speed threshold therefore never triggers. The script instead compares the
+  centreline every 0.5 s and stops when nothing moved more than 0.1 mm.
+
+### Outputs (`results/ethernet_cat6/<init>/bend_x<scale>/`)
+
+| file | content |
+|---|---|
+| `sim_centerline.csv` | `s_m, x_m, y_m, z_m, part` (0 grip, 1 scanned stretch, 2 plug), final shape, scan frame |
+| `init_centerline.csv` | same columns, the starting shape |
+| `sim_centerline.ply` | the final centreline in the **scan PLY's units**: open it with the scan in CloudCompare |
+| `meta.json` | every parameter used, IK error, mass, settle time, stretch % |
+| `as_scan/` | the final shape in the tube-fit format: use it as a synthetic scan (below) |
+
+### Self-test: can the pipeline find a stiffness it knows?
+
+1. Run once with a known `EI` and a long `max_time_s` so it settles.
+2. Point `scan.centerline_csv` / `summary_json` at that run's `as_scan/`.
+3. Run `--sweep` and `compare_to_scan.py`.
+
+The `EI` you started from must come out best, with `moved` ≈ 0 for it.
+`04_pointcloud_vs_sim/README.md` shows the result of this test.
+
+### When the Franka can't reach
+
+With `robot.base_xyz_m: null`, the base is put on the table, `base_distance_m`
+behind the grip, facing it. If IK can't reach, a warning prints the error. The
+cable result is unaffected, because the robot is only visual. Set
+`robot.base_xyz_m` (and `base_yaw_deg`) to where the real robot stands in the
+scan frame.
