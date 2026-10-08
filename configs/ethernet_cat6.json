@@ -5,11 +5,13 @@
   "scan": {
     "centerline_csv": "results/Ethernet_tube_fit/centerline.csv",
     "summary_json": "results/Ethernet_tube_fit/summary.json",
-    "_frame": "The scan is assumed Z-up (gravity = -z) and in metres, as written by 04_pointcloud_vs_sim/tube_fit/fit_cable_tube.py.",
+    "_frame": "metres, in the scanner's own frame, as written by 04_pointcloud_vs_sim/tube_fit/fit_cable_tube.py. The scanner frame is usually NOT z-up.",
+    "up": "auto",
+    "_up": "direction of 'up' in the scan frame. 'auto' = measured from the cable (it can only go down from the gripper, then lie flat on the table); or an axis 'z', 'y', '-y', ...; or a vector [x, y, z]. Everything is then turned so up is +z.",
     "gripper_end": "auto",
     "_gripper_end": "auto = the higher end of the centreline (the other end lies on the table); or 'start' / 'end' of centerline.csv",
     "ground_z_m": null,
-    "_ground_z_m": "null = lowest cable centreline point minus the radius; set a number if the table is visible elsewhere in the scan"
+    "_ground_z_m": "null = lowest cable centreline point minus the radius (after turning up to +z); a number is in that turned frame"
   },
 
   "cable": {
@@ -17,13 +19,13 @@
     "_radius_m": "null = radius from summary.json (tube fit: 3.60 mm)",
     "mass_per_length_kg_m": 0.045,
     "_mass_per_length_kg_m": "GUESS: typical Cat6 patch cable 40-50 g/m. Weigh 1 m of your cable.",
-    "bend_rigidity_EI_Nm2": 1.0e-3,
-    "_bend_rigidity_EI_Nm2": "GUESS: Cat6 ~0.5e-3 to 2e-3 N m^2. The main unknown; see sweep.bend_scale. Table-edge test: EI = w L^4 / (8 delta).",
-    "twist_rigidity_GJ_Nm2": 7.7e-4,
+    "bend_rigidity_EI_Nm2": 5.0e-3,
+    "_bend_rigidity_EI_Nm2": "GUESS from a physics estimate for a 7.2 mm Cat6: 8 solid copper wires of 0.57 mm (each 117 GPa x pi d^4/64 = 6e-4) ~5e-3, plus the PVC jacket 1-7e-3. The first guess, 1e-3, was clearly too soft (the sim hung straight down where the real cable bows out). MEASURE it: table-edge test, EI = w L^4 / (8 delta) with w = 0.44 N/m; e.g. 20 cm sticking out horizontally that drops 1.8 cm means EI = 5e-3.",
+    "twist_rigidity_GJ_Nm2": 3.85e-3,
     "_twist_rigidity_GJ_Nm2": "GUESS: ~EI / 1.3 (solid round section, Poisson 0.3)",
-    "stretch_rigidity_EA_N": 2.0e4,
-    "_stretch_rigidity_EA_N": "Real Cat6 is ~2e5 N (copper). 2e4 N is softer for a faster solve; stretch under own weight is still < 0.01 %.",
-    "shear_rigidity_kGA_N": 7.0e3,
+    "stretch_rigidity_EA_N": 200.0,
+    "_stretch_rigidity_EA_N": "NOT the real value (~2e5 N) on purpose. VBD makes BENDING far too soft when stretch/shear are much stiffer than bending: with 2e4 N / 7e3 N a cantilever drooped 10x more than beam theory (the 'jelly'). 200 N / 20 N brings it within ~7% (run 03_franka_holds_cable/check_stiffness.py). The cable still stretches only ~0.1 % under its own weight. Re-check if you change segment_length_m or EI.",
+    "shear_rigidity_kGA_N": 20.0,
     "bend_damping_time_s": 0.002,
     "_bend_damping_time_s": "per-joint bend/twist damping = this x per-joint stiffness (the reference example uses 2e-3). Only changes how fast it settles.",
     "grip_length_m": 0.02,
@@ -31,7 +33,13 @@
     "plug_length_m": 0.036,
     "_plug_length_m": "RJ45 plug + boot past the last scan node (the tube fit trimmed 36 mm there)",
     "plug_mass_kg": 0.004,
-    "_plug_mass_kg": "GUESS: RJ45 plug with boot 3-5 g. Spread over the plug segments."
+    "_plug_mass_kg": "GUESS: RJ45 plug with boot 3-5 g. Spread over the plug segments.",
+    "rest_curvature_per_m": 0.0,
+    "_rest_curvature_per_m": "the cable's natural curl (memory of the coil it came in): rest curvature in 1/m, coil radius = 1/value. 0 = a cable that wants to be straight. Find it with 04_pointcloud_vs_sim/fit_to_scan.py, or measure: lay the cable loose on the table and fit a circle to it.",
+    "rest_curl_direction_deg": 0.0,
+    "_rest_curl_direction_deg": "to which side it curls, around the cable axis, measured in the start pose's frame at the gripper. Only meaningful with a fitted curl.",
+    "fix_plug_end": true,
+    "_fix_plug_end": "true = the plug end is held still at its scanned place (init 'scan' only), so the far end cannot slide away; the cable between grip and plug is free. false = free end with the plug mass."
   },
 
   "contact": {
@@ -47,10 +55,13 @@
   "robot": {
     "enabled": true,
     "_enabled": "the Franka is kinematic (does not move, only placed with IK). The cable boundary condition is the clamp, so the robot does not change the cable result.",
+    "grasp": "across",
+    "_grasp": "how the fingers hold the cable. 'across' = the finger pads pinch it from the sides, hand above the cable (like the reference example). 'along' = the cable comes straight out of the fingertips. Look at your scan/photo and pick the one that matches. Visual only.",
     "base_xyz_m": null,
-    "_base_xyz_m": "null = automatic: on the table, base_distance_m behind the gripper, facing it",
+    "_base_xyz_m": "null = automatic: on the table, on the far side of the grip from the cable, facing it. The distances 0.4-0.7 m and both hand flips are tried, and the pose that reaches the grip with the arm highest above the table is kept. A value is in the SCAN's frame and metres (e.g. clicked in CloudCompare, divided by 1000 if the PLY is in mm).",
     "base_yaw_deg": null,
-    "base_distance_m": 0.5
+    "base_distance_m": 0.5,
+    "_base_distance_m": "first distance tried in automatic placement"
   },
 
   "sim": {
@@ -59,12 +70,15 @@
     "segment_length_m": 0.01,
     "_segment_length_m": "~2.8 x radius; check by halving it (convergence)",
     "fps": 60,
-    "substeps": 10,
+    "substeps": 20,
     "iterations": 20,
+    "_substeps_iterations": "20 x 20 is the cheapest pair that bends like EI within ~6 % (check_stiffness.py). With 10 x 20 the cable is ~27 % too soft; for this cable more substeps help more than more iterations.",
     "friction_epsilon": 1.0e-4,
     "_friction_epsilon": "VBD smooths friction below this sliding speed [m/s]. Newton's default 1e-2 lets a cable lying on the table creep ~1 mm/s forever; 1e-4 makes it stick (drift < 0.05 mm per 0.5 s).",
     "max_time_s": 8.0,
     "min_time_s": 1.0,
+    "separate_crossings": true,
+    "_separate_crossings": "where the scanned cable crosses itself closer than one diameter (hidden touching sides), lift the upper strand to exactly one diameter before starting. Without this, self-contact pushes the strands apart for as long as it runs: the cable jumps and never settles, worst with the plug end fixed.",
     "settle_window_s": 0.5,
     "settle_tol_m": 1.0e-4,
     "_settle": "settled = no centreline node moved more than settle_tol_m over the last settle_window_s (speed is not used: VBD velocities carry ~mm/s iteration noise even at rest)",
@@ -73,8 +87,8 @@
   },
 
   "sweep": {
-    "bend_scale": [0.25, 0.5, 1.0, 2.0, 4.0],
-    "_bend_scale": "multipliers on bend (and twist) rigidity, run with --sweep"
+    "bend_scale": [0.2, 0.5, 1.0, 2.0, 4.0],
+    "_bend_scale": "multipliers on bend (and twist) rigidity, run with --sweep: EI = 1e-3, 2.5e-3, 5e-3, 1e-2, 2e-2 N m^2"
   },
 
   "output_dir": "results/ethernet_cat6"

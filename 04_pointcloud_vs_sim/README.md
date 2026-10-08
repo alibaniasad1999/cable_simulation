@@ -456,28 +456,93 @@ Writes `results/ethernet_cat6/<init>/compare/`:
 
 ### Self-test result (synthetic scan with a known stiffness)
 
-A settled simulation with `EI = 1e-3 N m²` was written out as a scan (its
-`as_scan/` folder) and used as the "real" cable. The cable hangs from 35 cm,
-leaves the gripper almost straight down, and ends in a self-crossing loop on the
-table. Then the sweep ran on it:
+A settled simulation with `EI = 5e-3 N m²` (reference JSON: EA 200 N, kGA 20 N,
+20 × 20, plug end fixed) was written out as a scan (its `as_scan/` folder) and used
+as the "real" cable. It hangs from 35 cm and ends in a loop on the table that
+crosses over itself. The sweep then ran on it, with `scan.up: "z"`:
 
-| EI scale | 0.25× | 0.5× | **1× (true)** | 2× | 4× |
+| EI | 1e-3 | 2.5e-3 | **5e-3 (true)** | 1e-2 | 2e-2 |
 |---|---|---|---|---|---|
-| shape RMS [mm] | 0.7 | 0.4 | **0.4** | 1.2 | 4.4 |
-| shape max [mm] | 2.5 | 1.3 | **0.9** | 3.7 | 13.0 |
-| moved [mm] | 2.4 | 1.5 | **1.0** | 3.6 | 13.0 |
+| shape RMS [mm] | 11.1 | 3.4 | **1.3** | 4.9 | 10.8 |
+| shape max [mm] | 24.0 | 7.1 | **2.3** | 8.4 | 20.5 |
+| moved [mm] | 24.1 | 7.1 | **2.5** | 8.5 | 21.3 |
 
-- The true stiffness wins: lowest RMS and max, and it moves least.
-- About 1 mm of `moved` remains even for the true `EI` (re-meshing: 107 vs 108
-  segments, and the plug rounding). Treat ~1 mm as the noise floor of the
-  pipeline itself.
-- The minimum is **sharp on the stiff side, shallow on the soft side** (0.5× is
-  only 0.4 mm worse in max). A cable leaving the gripper straight down constrains
-  `EI` from above much better than from below. A scan where the cable leaves
-  the gripper sideways separates soft values better (§11).
+- The true stiffness wins clearly on both sides.
+- ~2.5 mm of `moved` remains even for the true EI: the noise floor of the pipeline
+  itself. Differences below ~3 mm mean nothing.
 
-This test **failed** at first, and fixing it found two solver settings (Part 3,
-*Two solver settings that matter*). With Newton's default friction smoothing,
-the lying cable kept creeping, and the true `EI` moved 11 mm and scored no
-better than 0.25×. Run this test again whenever you change solver settings.
+It took several failures to get here, each a real bug, now fixed (see
+`03_franka_holds_cable/GUIDE.md`):
+1. friction creep: the lying cable kept sliding;
+2. bending ~10× too soft because stretch/shear were far stiffer than bending (the
+   "jelly"; `check_stiffness.py` catches it);
+3. the grip direction averaged over 2 cm instead of the tube fit's exact tangent.
+
+Run this test again whenever you change solver settings.
+
+---
+
+## Fitting the cable to the scan (`fit_to_scan.py`)
+
+When you want the best possible match and have computing power (Ubuntu, many
+cores or an NVIDIA GPU), let a search find the cable's properties:
+
+```bash
+python 04_pointcloud_vs_sim/fit_to_scan.py --config configs/ethernet_cat6.json --workers 16
+python 04_pointcloud_vs_sim/fit_to_scan.py --config configs/ethernet_cat6.json --workers 8 --device cuda:0
+python 04_pointcloud_vs_sim/fit_to_scan.py --config configs/ethernet_cat6.json --params EI        # stiffness only
+python 04_pointcloud_vs_sim/fit_to_scan.py --config configs/ethernet_cat6.json --part hanging     # score the hanging part only
+```
+
+**What it searches:** EI (log scale; GJ keeps the JSON's ratio to EI), and the
+cable's natural curl, meaning its strength (1/m) and the side it curls to (degrees).
+Everything else comes from the JSON. Weigh your cable first and put
+`mass_per_length_kg_m` in: from a still cable only *EI ÷ weight* can be found, so the
+fitted EI is only right for the mass you give it.
+
+**How:** a coarse grid over all three (by default 7 EI values × curl 0, 3, 6, 9 /m ×
+6 directions = 133 runs), all in parallel. Then a pattern search from the best: one
+step up and down in every parameter, in parallel; move to the best, or halve the
+steps; stop when the steps are small. Each candidate is a full simulation until it
+settles. The robot is left out, because it's only visual.
+
+**Workers:** on CPU, about one per core (each simulation uses one). On a GPU, start
+with 4–8 and watch the GPU memory. Every run is saved, so if it stops, the same
+command continues where it left off.
+
+**Outputs** in `results/ethernet_cat6_fit/`:
+
+| file | content |
+|---|---|
+| `evaluations.csv` | every candidate: parameters, scores (all / hanging / lying), settled |
+| `best.json` | the best values, plus EI ÷ weight and the gravity-bending length |
+| `best_config.json` | your JSON with the best values filled in. Run it with `ethernet_scene.py --viewer gl`. |
+| `progress.png` | score vs EI for every candidate, coloured by curl |
+| `best/compare/` | overlay and error plots of the best run vs the scan |
+
+**Reading it honestly:**
+- This is a fit: the scan was used to choose the values, so a small error here
+  doesn't by itself prove the model is right. **Test it on a second scan in another
+  pose**: copy `best_config.json`, change only `scan.centerline_csv`, run
+  `ethernet_scene.py` + `compare_to_scan.py`, and look at that error.
+- Differences under ~2–3 mm are within the pipeline's own noise.
+- If the best curl is 0, your cable behaves as straight. If it's clearly above 0,
+  the cable's coil memory matters, and a straight model could never match.
+
+**Test with a known answer.** A cable simulated with EI = 3e-3 N m², curl 6 /m (coil
+radius 167 mm) towards 60°, settled and restarted once so its twist is at
+equilibrium (like a real cable at rest), was used as the "scan". The fit started at
+EI = 5e-3 with no curl, with a coarse grid of directions 0/90/180/270° only, so 60°
+was not on the grid:
+
+| | EI [N m²] | curl [1/m] | direction | RMS [mm] |
+|---|---|---|---|---|
+| truth | 3.0e-3 | 6.0 | 60° | 2.0 (its own noise floor) |
+| best without curl | 1.7e-3 | 0 | — | 5.3 |
+| best of the coarse grid | 3.5e-3 | 5.0 | 90° | 4.5 |
+| after one refinement round | **3.5e-3** | **6.5** | **60°** | **2.05** |
+
+The fit lands on the true values within the pipeline's noise. Before the hidden
+twist was handled (`03_franka_holds_cable/GUIDE.md`, 4g), the exact true values
+scored 28.5 mm and the fit went somewhere else entirely.
 

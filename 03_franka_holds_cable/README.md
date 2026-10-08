@@ -254,28 +254,53 @@ python 03_franka_holds_cable/ethernet_scene.py --config configs/ethernet_cat6.js
 python 03_franka_holds_cable/ethernet_scene.py --config configs/ethernet_cat6.json --viewer gl   # watch it
 python 03_franka_holds_cable/ethernet_scene.py --config configs/ethernet_cat6.json --sweep       # all EI values
 python 03_franka_holds_cable/ethernet_scene.py --config configs/ethernet_cat6.json --bend-scale 2
+python 03_franka_holds_cable/check_stiffness.py --config configs/ethernet_cat6.json             # does it bend like its EI?
 ```
 
+**Run `check_stiffness.py` first, and again whenever you change rigidities, segment
+length, substeps or iterations.** It clamps a straight 20 cm piece horizontally and
+compares the sag with beam theory. It must say `OK` (sim/theory within 15 %).
+
 Input: the tube-fit output `results/Ethernet_tube_fit/centerline.csv` (+ `summary.json`
-for the radius). The scan is taken as **Z-up, in metres**.
+for the radius). The scan is in **metres, in the scanner's own frame**, which is
+usually *not* z-up. The script measures which way is up from the cable itself
+(`scan.up: "auto"`) and turns everything so up is +z.
 
 ### What the script builds, step by step
 
 | step | JSON | Newton call / what happens |
 |---|---|---|
+| which way is up | `scan.up` | `auto`: the table is the plane the most cable rests on (all nodes at the same, lowest height), with the gripper end on top; refined on a 0.1° grid and polished by a plane fit. Or an axis (`"y"`, `"-y"`, …) or a vector. The scan is turned so up is +z. |
 | orient the scan | `scan.gripper_end` | node 0 = the gripper end (`auto`: the higher end; the other end lies on the table) |
 | table | `scan.ground_z_m` | `add_ground_plane(height=...)`; `null` = lowest scanned centreline point − radius |
 | cable length | `cable.grip_length_m`, `cable.plug_length_m` | grip (inside the fingers) + scanned length + plug. Arc length `s = 0` is the first scanned node. |
+| crossing fix | `sim.separate_crossings` | where the scanned cable crosses itself closer than one diameter, the upper strand is lifted to exactly one diameter (smooth 2 cm bump, ends never move). Printed as `crossing fix: ...`. Without it the cable jumps and never settles. |
 | segments | `sim.segment_length_m` | adjusted so the grip is a whole number of segments (10 mm → 2 grip segments) |
-| elasticity | `cable.*_rigidity_*` | `newton.Rod.create_straight(..., stretch_rigidity=EA, shear_rigidity=kGA, bend_rigidity=EI, twist_rigidity=GJ)`. With rigidities, **Newton divides by the segment length itself** (`EI / h` per joint), so changing the segment length doesn't change the cable. |
+| elasticity | `cable.*_rigidity_*` | `newton.Rod.create_straight(..., stretch_rigidity=EA, shear_rigidity=kGA, bend_rigidity=EI, twist_rigidity=GJ)`. With rigidities, **Newton divides by the segment length itself** (`EI / h` per joint). **EA and kGA are kept moderate (200 N, 20 N) on purpose**: much stiffer values make VBD bend the cable ~10× too easily (see below). |
 | mass | `cable.mass_per_length_kg_m` | `ShapeConfig(density=...)`. Each capsule has two round end caps on top of its length, which adds ~50 % volume at 10 mm segments; the density is corrected so the mass per metre is exact (printed in `meta.json` as `mass_free_cable_kg`). |
-| plug | `cable.plug_mass_kg` | extra mass (and inertia) on the plug segments |
+| plug | `cable.plug_mass_kg`, `cable.fix_plug_end` | `fix_plug_end: true` (default): the plug segments are held still at their scanned place, so the far end can't slide away. `false`: they're free and carry the plug mass. |
+| natural curl | `cable.rest_curvature_per_m`, `cable.rest_curl_direction_deg` | 0 (default): the cable wants to be straight. Above 0: its rest shape is a coil of radius 1/value, curling to the given side. Ethernet cable keeps the coil from its box, and a straight model can't hold a loop the way it does. Usually found with `fit_to_scan.py`. |
+| hidden twist | (automatic when curl > 0) | a scan can't show how the cable is twisted, and with a curl the twist decides where the curl points. The start twist is set to the one with the least energy for the scanned shape (`relax_twist`, printed as `start twist ...`). |
 | damping | `cable.bend_damping_time_s` | `bend_damping = τ · EI / h` (same idea as the example's `2e-3 × stiffness`) |
 | grip | — | the grip segments get **zero mass** = kinematic: held at the scanned position and direction. **This is the boundary condition.** |
-| Franka | `robot.*` | `add_urdf` (FR3 + hand), placed with `newton.ik` so `fr3_hand_tcp` sits on the grip, hand z along the cable, fingers closed to the cable radius. All links zero mass → kinematic. Only visual: it doesn't touch the cable. |
+| Franka | `robot.*` | `add_urdf` (FR3 + hand), placed with `newton.ik` so `fr3_hand_tcp` sits on the grip, holding it as `robot.grasp` says, fingers closed to the cable radius. Several base distances and both hand flips are tried; the pose that reaches with the arm highest above the table wins. All links zero mass → kinematic. Only visual: it doesn't touch the cable. |
 | contacts | `contact.*` | explicit pairs: cable–table and cable–cable (more than 3 segments apart, because the scanned cable crosses itself). No robot pairs. |
 | solver | `sim.iterations`, `substeps`, `friction_epsilon` | `SolverVBD(iterations, friction_epsilon, rigid_compliant_alm=True)` |
 | settle | `sim.settle_window_s`, `settle_tol_m` | runs until no node moved more than `settle_tol_m` (0.1 mm) over `settle_window_s` (0.5 s), or `max_time_s` |
+
+### Getting the best match: `fit_to_scan.py`
+
+With a powerful Ubuntu machine, let the computer find the properties:
+
+```bash
+python 04_pointcloud_vs_sim/fit_to_scan.py --config configs/ethernet_cat6.json --workers 16            # CPU cores
+python 04_pointcloud_vs_sim/fit_to_scan.py --config configs/ethernet_cat6.json --workers 8 --device cuda:0
+```
+
+It searches EI, the curl strength and its direction, running many simulations
+at once, and writes `best_config.json`. Watch the result with
+`ethernet_scene.py --config results/ethernet_cat6_fit/best_config.json --viewer gl`.
+Details and how to read it: `04_pointcloud_vs_sim/README.md`, *Fitting*.
 
 ### The key trick: rest shape straight, start pose curved
 
@@ -300,9 +325,16 @@ height and lets it fall. The hanging part should end up the same. The part lying
 on the table won't, because with friction it depends on *how* the cable came
 down. That's why `scan` is the default for the comparison.
 
-### Two solver settings that matter for a *static* comparison
+### Solver settings that matter for a *static* comparison
 
-Found while testing this scene, and worth knowing for any cable lying on a table:
+Found while testing this scene, and worth knowing for any cable in VBD:
+
+- **Stretch/shear vs bending ("jelly").** With the real-ish `EA = 2e4 N`,
+  `kGA = 7e3 N`, a clamped 20 cm piece sagged **10.8×** more than beam theory, and
+  more iterations didn't help. VBD makes bending too soft when stretch/shear are
+  far stiffer than bending, and it gets worse with shorter segments. `EA = 200 N`,
+  `kGA = 20 N`, 20 substeps × 20 iterations → within 6 %. 200 N still means only
+  ~0.1 % stretch under the cable's own weight. `check_stiffness.py` measures it.
 
 - **`friction_epsilon`.** VBD smooths friction below this sliding speed. With
   Newton's default (`1e-2` m/s), a cable lying on the table never really stops: it
@@ -318,9 +350,9 @@ Found while testing this scene, and worth knowing for any cable lying on a table
 
 | file | content |
 |---|---|
-| `sim_centerline.csv` | `s_m, x_m, y_m, z_m, part` (0 grip, 1 scanned stretch, 2 plug), final shape, scan frame |
+| `sim_centerline.csv` | `s_m, x_m, y_m, z_m, part` (0 grip, 1 scanned stretch, 2 plug), final shape, in the **world frame** (scan turned so up is +z; the rotation is `scan_to_world` in `meta.json`) |
 | `init_centerline.csv` | same columns, the starting shape |
-| `sim_centerline.ply` | the final centreline in the **scan PLY's units**: open it with the scan in CloudCompare |
+| `sim_centerline.ply` | the final centreline turned back into the **scan's own frame and units**: open it with the scan in CloudCompare |
 | `meta.json` | every parameter used, IK error, mass, settle time, stretch % |
 | `as_scan/` | the final shape in the tube-fit format: use it as a synthetic scan (below) |
 
@@ -333,10 +365,46 @@ Found while testing this scene, and worth knowing for any cable lying on a table
 The `EI` you started from must come out best, with `moved` ≈ 0 for it.
 `04_pointcloud_vs_sim/README.md` shows the result of this test.
 
-### When the Franka can't reach
+### When the Franka is in the wrong place (or under the table)
 
-With `robot.base_xyz_m: null`, the base is put on the table, `base_distance_m`
-behind the grip, facing it. If IK can't reach, a warning prints the error. The
-cable result is unaffected, because the robot is only visual. Set
-`robot.base_xyz_m` (and `base_yaw_deg`) to where the real robot stands in the
-scan frame.
+IK only places the fingertip point (TCP). It doesn't know the table exists, so
+it can put the wrist or hand through the table and still report 0 mm error. The
+script therefore checks every IK solution against the table using the robot's real
+link meshes, and prints one line, for example:
+
+```
+Franka: grasp 'across', base 0.40 m from the grip: IK 0.0 mm / 0.0 deg, lowest point +141 mm above the table (fr3_link1); 2 of 8 poses tried reach the grip
+```
+
+- **`robot.grasp`** says how the fingers hold the cable. `across` (default): the
+  pads pinch it from the sides, hand above, like the reference example. `along`:
+  the cable comes straight out of the fingertips, so the hand sits behind the grip
+  on the side away from the cable. For a low grip or a cable leaving upward,
+  `along` goes under the table. Look at the gripper in your scan and pick the one
+  that matches.
+- With `robot.base_xyz_m: null`, it tries base distances 0.4–0.7 m and both hand
+  flips, and keeps the pose that reaches the grip with the arm highest above the table.
+- A **WARNING** prints if nothing reaches, or if even the best pose is below the
+  table. Then set `robot.base_xyz_m` (and `base_yaw_deg`) to where your robot really
+  stands in the scan frame, or change `robot.grasp`.
+
+None of this changes the cable result: the cable's grip is the same in every case.
+
+### When the scan line (red) stands up, or the hand is on the floor
+
+In the viewer the scan is the thin **red** line. It must hang down from the gripper
+and lie flat on the table. If it stands up (a lying loop seen as a tall vertical
+loop), "up" is wrong: the cable starts on an impossible shape and collapses, the
+gripper end is put near the floor, and the hand goes under the table. Check the
+printed line:
+
+```
+up in the scan frame: (+0.002, -1.000, +0.000)  [auto: nearest axis -y, tilt 0.14 deg, cable climbs 0.2 mm, 97 nodes lying flat]
+```
+
+- `cable climbs` should be a few mm at most (one strand crossing over another is
+  ~2 cable diameters). Tens of mm means no direction makes the cable hang and lie
+  physically: check the tube fit.
+- `nodes lying flat` is the stretch on the table. It is what tells up from down.
+- If `auto` still picks the wrong direction, set `scan.up` yourself, e.g. `"y"`.
+

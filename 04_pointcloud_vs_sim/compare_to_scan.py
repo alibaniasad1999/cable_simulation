@@ -67,9 +67,10 @@ def arclength(X):
     return np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(X, axis=0), axis=1))])
 
 
-def load_scan(csv_path, gripper_end):
+def load_scan(csv_path, gripper_end, scan_to_world):
+    """Scan centreline in the simulation's world frame (up = +z), gripper end first."""
     d = np.genfromtxt(csv_path, delimiter=",", names=True)
-    X = np.column_stack([d["x_m"], d["y_m"], d["z_m"]])
+    X = np.column_stack([d["x_m"], d["y_m"], d["z_m"]]) @ np.asarray(scan_to_world, float).T
     sup = d["supported"].astype(bool) if "supported" in d.dtype.names else np.ones(len(X), bool)
     if gripper_end == "end":  # same orientation the simulation used
         X, sup = X[::-1].copy(), sup[::-1].copy()
@@ -316,7 +317,8 @@ def main():
     for d in run_dirs:
         meta, sim_s, sim_X, init_X, _ = load_run(d)
         if scan_X is None:
-            scan_X, scan_s, scan_sup = load_scan(meta["scan"], meta["gripper_end"])
+            scan_X, scan_s, scan_sup = load_scan(meta["scan"], meta["gripper_end"],
+                                                 meta.get("scan_to_world", np.eye(3).tolist()))
             ground = meta["ground_z_m"]
         row, pn = compare_one(scan_X, scan_s, scan_sup, meta, sim_s, sim_X, init_X)
         row["run"] = d.name
