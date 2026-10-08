@@ -12,8 +12,9 @@ Then compare with the scan:
 
 What is simulated (see README.md in this folder for the reasoning):
 
-  * scan    the tube-fit centreline (04_pointcloud_vs_sim/tube_fit), Z-up, metres.
-            Node 0 is put at the gripper end.
+  * scan    the tube-fit centreline (04_pointcloud_vs_sim/tube_fit), metres, in
+            the scanner's own frame. 'Up' is measured from the cable (scan.up)
+            and everything is turned so up is +z. Node 0 is the gripper end.
   * cable   a Newton rod built from section rigidities (EI, EA, GJ, kGA) in the
             JSON, so Newton divides by the segment length itself. Its REST shape
             is straight; only its starting pose follows the scan.
@@ -72,8 +73,116 @@ def repo_path(p):
     return p if p.is_absolute() else REPO / p
 
 
+AXES = {"x": (1, 0, 0), "-x": (-1, 0, 0), "y": (0, 1, 0), "-y": (0, -1, 0), "z": (0, 0, 1), "-z": (0, 0, -1)}
+
+
+def cable_rise(X, dirs):
+    """How much the cable climbs again, walking from its higher end, for each direction [m].
+
+    A cable hanging from a gripper and lying on a table only goes DOWN from the
+    gripper (plus a few mm where it crosses itself). With a wrong 'up' it climbs a
+    lot: a loop lying on the table, seen sideways, is a tall vertical loop.
+    X: (N, 3) nodes in order along the cable; dirs: (M, 3) unit vectors.
+    Note: up and -up score the same (a cable "hanging upward" is monotone too).
+    """
+    H = X @ np.atleast_2d(dirs).T  # (N, M) heights
+    rev = H[-1] > H[0]  # walk from the higher end
+    H[:, rev] = H[::-1, rev]
+    return np.clip(np.diff(H, axis=0), 0.0, None).sum(axis=0)
+
+
+def sphere_directions(n):
+    """n roughly evenly spread unit vectors (Fibonacci sphere)."""
+    i = np.arange(n) + 0.5
+    polar = np.arccos(1.0 - 2.0 * i / n)
+    azim = np.pi * (1.0 + 5 ** 0.5) * i
+    return np.column_stack([np.cos(azim) * np.sin(polar), np.sin(azim) * np.sin(polar), np.cos(polar)])
+
+
+def directions_near(axis, max_deg, step_deg):
+    """Unit vectors within max_deg of `axis`, on a grid of about step_deg."""
+    axis = unit(np.asarray(axis, float))
+    a = unit(np.cross(axis, [1.0, 0.0, 0.0] if abs(axis[0]) < 0.9 else [0.0, 1.0, 0.0]))
+    b = np.cross(axis, a)
+    out = [axis]
+    for tilt in np.radians(np.arange(step_deg, max_deg + 1e-9, step_deg)):
+        n = max(6, int(round(2 * np.pi * np.sin(tilt) / np.radians(step_deg))))
+        for f in np.linspace(0.0, 2 * np.pi, n, endpoint=False):
+            out.append(np.cos(tilt) * axis + np.sin(tilt) * (np.cos(f) * a + np.sin(f) * b))
+    return np.array(out)
+
+
+def find_up(X, radius, setting):
+    """Direction of 'up' (against gravity) in the scan's frame, and how it was found.
+
+    setting: 'auto', an axis name ('z', '-y', ...) or a vector [x, y, z].
+    'auto' MEASURES the scan's orientation from the cable, the way the tube fit
+    measures the radius; it never looks at the simulation:
+      1. direction along which the cable climbs least (cable_rise): every
+         direction on the sphere (~1.4 deg apart), then +-2.5 deg at 0.2 deg;
+      2. up or down? The stretch lying on the table is many nodes at the SAME,
+         lowest height; the gripper end is a single high point. Choose the sign
+         that puts the flat stretch at the bottom;
+      3. polish: a plane through the nodes lying on the table (lowest 5 mm), if
+         they spread in two directions (a straight line does not define a plane).
+    """
+    if isinstance(setting, (list, tuple)):
+        return unit(np.asarray(setting, float)), {"method": "given vector"}
+    if setting in AXES:
+        return np.asarray(AXES[setting], float), {"method": f"given axis {setting}"}
+    if setting != "auto":
+        raise SystemExit(f"scan.up must be 'auto', an axis like 'z' or '-y', or a vector, got {setting!r}")
+
+    dirs = sphere_directions(20000)
+    up = dirs[int(np.argmin(cable_rise(X, dirs)))]
+    near = directions_near(up, 2.5, 0.2)
+    up = near[int(np.argmin(cable_rise(X, near)))]
+
+    tol = max(0.005, radius)
+    h = X @ up
+    at_bottom, at_top = int((h < h.min() + tol).sum()), int((h > h.max() - tol).sum())
+    if at_top > at_bottom:
+        up, h = -up, -h
+        at_bottom, at_top = at_top, at_bottom
+    info = {"method": "auto", "rise_mm": round(1000 * float(cable_rise(X, up)[0]), 1),
+            "nodes_lying_flat": at_bottom, "nodes_at_top": at_top}
+
+    lying = X[h < h.min() + tol]
+    for _ in range(3):  # fit, then keep only nodes within 1 mm of the plane (drops the touchdown lift)
+        if len(lying) < 10:
+            break
+        centre = lying.mean(0)
+        sv, vt = np.linalg.svd(lying - centre, full_matrices=False)[1:]
+        n = vt[2] if vt[2] @ up > 0 else -vt[2]
+        if sv[1] < 0.2 * sv[0] or np.degrees(np.arccos(np.clip(n @ up, -1, 1))) > 5.0:
+            break  # a line, not a plane, or too far from the climb estimate: keep the estimate
+        up = n
+        info["polished_by_table_plane"] = True
+        lying = lying[np.abs((lying - centre) @ n) < 0.001]
+    axis = max(AXES, key=lambda k: float(np.dot(up, AXES[k])))
+    info["nearest_axis"] = axis
+    info["tilt_from_axis_deg"] = round(float(np.degrees(np.arccos(np.clip(up @ AXES[axis], -1, 1)))), 2)
+    return up, info
+
+
+def rotation_to_z(up):
+    """Smallest rotation R with R @ up = +z (Rodrigues)."""
+    up = unit(up)
+    v = np.cross(up, UP)
+    c = float(up @ UP)
+    if c < -1.0 + 1e-9:  # up = -z: half turn about x
+        return np.diag([1.0, -1.0, -1.0])
+    K = np.array([[0.0, -v[2], v[1]], [v[2], 0.0, -v[0]], [-v[1], v[0], 0.0]])
+    return np.eye(3) + K + K @ K / (1.0 + c)
+
+
 def load_scan(cfg):
-    """Tube-fit centreline, oriented so that node 0 is the gripper end."""
+    """Tube-fit centreline, turned so that up is +z, with node 0 at the gripper end.
+
+    Everything after this works in that gravity-aligned 'world' frame. The
+    rotation (scan -> world) is kept so outputs can be turned back into the
+    scan's own frame.
+    """
     scan_cfg = cfg["scan"]
     csv = repo_path(scan_cfg["centerline_csv"])
     if not csv.exists():
@@ -86,24 +195,27 @@ def load_scan(cfg):
     X = np.column_stack([data["x_m"], data["y_m"], data["z_m"]])
     supported = data["supported"].astype(bool) if "supported" in data.dtype.names else np.ones(len(X), bool)
 
+    radius = cfg["cable"].get("radius_m")
+    summary = {}
+    summary_path = repo_path(scan_cfg["summary_json"]) if scan_cfg.get("summary_json") else None
+    if summary_path is not None and summary_path.exists():
+        with open(summary_path) as f:
+            summary = json.load(f)
+    if radius is None:
+        if "radius_mm" not in summary:
+            raise SystemExit("cable.radius_m is null and summary.json has no radius_mm: set the radius in the JSON")
+        radius = summary["radius_mm"] / 1000.0
+
+    up, up_info = find_up(X[supported], radius, scan_cfg.get("up", "auto"))
+    R = rotation_to_z(up)
+    X = X @ R.T  # into the gravity-aligned world frame
+
     end = scan_cfg.get("gripper_end", "auto")
     if end == "auto":
         end = "start" if X[0, 2] >= X[-1, 2] else "end"
     if end == "end":
         X, supported = X[::-1].copy(), supported[::-1].copy()
     s = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(X, axis=0), axis=1))])
-
-    summary = {}
-    summary_path = repo_path(scan_cfg["summary_json"]) if scan_cfg.get("summary_json") else None
-    if summary_path is not None and summary_path.exists():
-        with open(summary_path) as f:
-            summary = json.load(f)
-
-    radius = cfg["cable"].get("radius_m")
-    if radius is None:
-        if "radius_mm" not in summary:
-            raise SystemExit("cable.radius_m is null and summary.json has no radius_mm: set the radius in the JSON")
-        radius = summary["radius_mm"] / 1000.0
 
     ground_z = scan_cfg.get("ground_z_m")
     if ground_z is None:
@@ -116,6 +228,9 @@ def load_scan(cfg):
         "radius": float(radius),
         "ground_z": float(ground_z),
         "gripper_end": end,
+        "up_scan": up,
+        "up_info": up_info,
+        "scan_to_world": R,
         "ply_units": summary.get("ply_units", "m"),
         "path": str(csv),
     }
@@ -281,8 +396,8 @@ def base_candidates(cfg_robot, scan, plan):
     the grip from the cable, facing the grip, at a few distances.
     """
     grip = plan["grip_center"]
-    if cfg_robot.get("base_xyz_m") is not None:
-        base = np.asarray(cfg_robot["base_xyz_m"], float)
+    if cfg_robot.get("base_xyz_m") is not None:  # given in the scan's own frame
+        base = scan["scan_to_world"] @ np.asarray(cfg_robot["base_xyz_m"], float)
         if cfg_robot.get("base_yaw_deg") is not None:
             yaw = np.radians(cfg_robot["base_yaw_deg"])
         else:
@@ -671,7 +786,11 @@ def run(cfg, scan, bend_scale, out_dir, viewer_kind="null", cache=None):
     info.update({"init": sim["init"], "settled": settled, "sim_time_s": round(t, 3),
                  "wall_time_s": round(time.time() - wall0, 1), "final_drift_m_per_window": drift,
                  "arc_length_m": float(np.linalg.norm(np.diff(nodes, axis=0), axis=1).sum()),
-                 "scan": scan["path"], "gripper_end": scan["gripper_end"]})
+                 "scan": scan["path"], "gripper_end": scan["gripper_end"],
+                 "up_in_scan_frame": np.round(scan["up_scan"], 6).tolist(), "up_detection": scan["up_info"],
+                 "scan_to_world": np.round(scan["scan_to_world"], 9).tolist(),
+                 "frame_note": "all CSVs are in the world frame = scan frame turned so up is +z "
+                               "(world = scan_to_world @ scan); sim_centerline.ply is in the scan's own frame"})
     info["stretch_percent"] = 100.0 * (info["arc_length_m"] / plan["length_total"] - 1.0)
     write_run(out_dir, plan, nodes, info, scan)
     print(f"  {'settled' if settled else 'NOT settled'} at t = {t:.2f} s ({info['wall_time_s']} s wall), "
@@ -701,7 +820,8 @@ def write_run(out_dir, plan, nodes, info, scan):
         json.dump(info, f, indent=2, default=float)
     # Same units as the scan's PLY, so it overlays the scan in CloudCompare.
     scale = 1000.0 if scan["ply_units"] == "mm" else 1.0
-    write_ply(out_dir / "sim_centerline.ply", resample(nodes, 4 * len(nodes)) * scale, (0, 120, 255))
+    in_scan_frame = resample(nodes, 4 * len(nodes)) @ scan["scan_to_world"]  # world -> scan frame
+    write_ply(out_dir / "sim_centerline.ply", in_scan_frame * scale, (0, 120, 255))
     write_as_scan(out_dir / "as_scan", plan, nodes, scan)
 
 
@@ -752,6 +872,13 @@ def main():
     scan = load_scan(cfg)
     print(f"scan: {len(scan['nodes'])} nodes, {1000 * scan['s'][-1]:.1f} mm, radius {1000 * scan['radius']:.2f} mm, "
           f"gripper at the {scan['gripper_end']} of the CSV, table z = {scan['ground_z']:.4f} m")
+    ui, up = scan["up_info"], scan["up_scan"]
+    print(f"up in the scan frame: ({up[0]:+.3f}, {up[1]:+.3f}, {up[2]:+.3f})  [{ui['method']}"
+          + (f": nearest axis {ui['nearest_axis']}, tilt {ui['tilt_from_axis_deg']} deg, cable climbs "
+             f"{ui['rise_mm']} mm, {ui['nodes_lying_flat']} nodes lying flat" if ui["method"] == "auto" else "") + "]")
+    if ui["method"] == "auto" and ui["rise_mm"] > 30.0:
+        print(f"WARNING: even with the best 'up' the cable climbs {ui['rise_mm']} mm somewhere along its length, "
+              "which a cable hanging from a gripper and lying on a table cannot do. Check the scan, or set scan.up.")
 
     out_root = repo_path(cfg["output_dir"]) / cfg["sim"]["init"]
     scales = cfg["sweep"]["bend_scale"] if args.sweep else [args.bend_scale]

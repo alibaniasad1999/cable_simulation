@@ -71,6 +71,8 @@ Sections: `scan`, `cable`, `contact`, `robot`, `sim`, `sweep`, `output_dir`.
 
 - Read the CSV with `np.genfromtxt(path, delimiter=",", names=True)`. Columns are
   then `data["x_m"]` etc.
+- **Which way is up? (2b below.)** Find it first, and turn the nodes so up is +z:
+  `X_world = X @ R.T`. Everything after this uses the turned nodes.
 - **Which end is the gripper?** The cable hangs from the gripper and its other end
   lies on the table, so the gripper end is the **higher** one. Compare `z` of the
   first and last node. If the last is higher, reverse the arrays. After this, node 0
@@ -87,6 +89,49 @@ ground_z = min z over supported nodes − r
 `ground_z = 0.0000`. Write the same scan reversed and check you still get "gripper
 at the end" and the same numbers.
 **Check (your scan):** 892.7 mm, `r = 3.60` mm.
+
+### 2b. Which way is up
+
+A scanner's frame is almost never z-up (scanning apps often use y-up, a depth
+camera has y pointing **down**). Assume z-up on such a scan and the part lying on
+the table becomes a tall vertical loop, the gripper end lands at table height, and
+the robot is pushed into the table. That really happened with your Ethernet scan.
+
+Measure "up" from the cable itself. Like the tube fit measuring the radius, this
+never looks at the simulation:
+
+1. **The cable never climbs back up.** Hanging from the gripper and lying on the
+   table, its height only goes *down* along the cable (except a few mm where one
+   strand crosses another). For a direction `d`, walk from the higher end and add
+   up every increase in height `X·d`:
+
+   ```
+   rise(d) = Σ max(0, h[k+1] − h[k]),   h = X·d, walked from the higher end
+   ```
+
+   Evaluate it for ~20 000 directions spread over the sphere (Fibonacci sphere),
+   take the smallest, then refine within ±2.5° at 0.2° steps. Vectorise:
+   `H = X @ D.T` is (nodes × directions).
+2. **Up or down?** `d` and `−d` score the same: a cable "hanging upward" from the
+   floor is monotone too. The table tells them apart: the stretch lying on it is
+   **many nodes at the same, lowest height**, while the gripper is a single high
+   point. Count nodes within 5 mm of the bottom and of the top, and flip `d` if the
+   top has more.
+3. **Polish with the table plane:** fit a plane (SVD) through the nodes within 5 mm
+   of the bottom, keep only those within 1 mm of it, and fit again (this drops the
+   nodes where the cable lifts off the table). Use the plane's normal if the nodes
+   spread in two directions (a straight line has no plane) and it's within 5° of `d`.
+
+Then build the rotation that takes `up` to `+z` (Rodrigues:
+`R = I + K + K²/(1 + up·z)`, `K` = cross-product matrix of `up × z`; for `up = −z`
+use a half turn about x). Keep `R` in `meta.json` so the comparison and the
+`.ply` output can use it.
+
+**Check:** take the test scan, turn it into several frames yourself (y-up, a
+camera's −y-up, tilted 10° and 25°, a few random rotations, plus an offset). The
+detected up must match the true one to ~0.01°, and the turned scan must have a
+height span of 346 mm every time. Before the plane polish you'll see ~0.14°.
+Without step 2, the −y-up case comes out exactly 180° wrong.
 
 ---
 
@@ -416,9 +461,10 @@ Per run, in `<output_dir>/<init>/bend_x<scale>/`:
 - `meta.json`: every number used (segments, `h`, EI, mass, IK error, ground z,
   settled, times, stretch, which end was the gripper). The comparison reads it, so
   the two scripts never disagree about the setup.
-- `sim_centerline.ply`: the final centreline in the **scan PLY's units**
-  (`summary["ply_units"]`) so it overlays the scan in CloudCompare. An ASCII PLY is
-  ten lines of `f.write`.
+- `sim_centerline.ply`: the final centreline turned **back into the scan's frame**
+  (`nodes_world @ R`) and the scan PLY's units (`summary["ply_units"]`), so it
+  overlays the scan in CloudCompare. An ASCII PLY is ten lines of `f.write`.
+- All CSVs stay in the turned (world) frame. Say so in `meta.json`.
 - `as_scan/centerline.csv` + `summary.json`: the scanned stretch only
   (`0 ≤ s ≤ L_scan`), in the tube-fit format, for the self-test (Stage 12).
 
@@ -426,8 +472,9 @@ Per run, in `<output_dir>/<init>/bend_x<scale>/`:
 
 ## Stage 10. Compare with the scan (no Newton needed)
 
-Load the scan again and orient it with the `gripper_end` from `meta.json`. Use only
-nodes with `supported = 1`.
+Load the scan again, turn it with `scan_to_world` from `meta.json`, and orient it
+with the `gripper_end` from `meta.json`. Then scan and simulation are in the same
+frame. Use only nodes with `supported = 1`.
 
 ### 10a. Point-to-polyline distance
 
@@ -505,6 +552,7 @@ above much better than from below.
 | "settled" never triggers though it looks still | speed-based criterion | shape-drift criterion (Stage 8) |
 | loop on the table stays perfectly still at any EI | rest shape = scanned curve | create the rod straight; only the *state* follows the scan |
 | cable twists/corkscrews at the start | your own frames add twist | frames from `newton.Rod(nodes).quaternions` |
+| red scan line stands up / hand on the floor / cable collapses at once | scan not z-up | Stage 2b; or set `scan.up` |
 | clamped end jumps away from the fingers | robot–cable contact pairs | exclude all Franka pairs |
 | result changes when you change segment length | per-joint stiffness passed directly | use rigidities on the `Rod` |
 | robot in a strange pose / IK error of cm | base out of reach | set `robot.base_xyz_m`. The cable is unaffected. |

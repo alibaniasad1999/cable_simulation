@@ -257,12 +257,15 @@ python 03_franka_holds_cable/ethernet_scene.py --config configs/ethernet_cat6.js
 ```
 
 Input: the tube-fit output `results/Ethernet_tube_fit/centerline.csv` (+ `summary.json`
-for the radius). The scan is taken as **Z-up, in metres**.
+for the radius). The scan is in **metres, in the scanner's own frame**, which is
+usually *not* z-up. The script measures which way is up from the cable itself
+(`scan.up: "auto"`) and turns everything so up is +z.
 
 ### What the script builds, step by step
 
 | step | JSON | Newton call / what happens |
 |---|---|---|
+| which way is up | `scan.up` | `auto`: the direction along which the cable never climbs again (it only goes down from the gripper, then lies flat), with the flat stretch at the bottom, polished by a plane through the stretch lying on the table. Or an axis (`"y"`, `"-y"`, …) or a vector. The scan is turned so up is +z. |
 | orient the scan | `scan.gripper_end` | node 0 = the gripper end (`auto`: the higher end; the other end lies on the table) |
 | table | `scan.ground_z_m` | `add_ground_plane(height=...)`; `null` = lowest scanned centreline point − radius |
 | cable length | `cable.grip_length_m`, `cable.plug_length_m` | grip (inside the fingers) + scanned length + plug. Arc length `s = 0` is the first scanned node. |
@@ -318,9 +321,9 @@ Found while testing this scene, and worth knowing for any cable lying on a table
 
 | file | content |
 |---|---|
-| `sim_centerline.csv` | `s_m, x_m, y_m, z_m, part` (0 grip, 1 scanned stretch, 2 plug), final shape, scan frame |
+| `sim_centerline.csv` | `s_m, x_m, y_m, z_m, part` (0 grip, 1 scanned stretch, 2 plug), final shape, in the **world frame** (scan turned so up is +z; the rotation is `scan_to_world` in `meta.json`) |
 | `init_centerline.csv` | same columns, the starting shape |
-| `sim_centerline.ply` | the final centreline in the **scan PLY's units**: open it with the scan in CloudCompare |
+| `sim_centerline.ply` | the final centreline turned back into the **scan's own frame and units**: open it with the scan in CloudCompare |
 | `meta.json` | every parameter used, IK error, mass, settle time, stretch % |
 | `as_scan/` | the final shape in the tube-fit format: use it as a synthetic scan (below) |
 
@@ -357,3 +360,22 @@ Franka: grasp 'across', base 0.40 m from the grip: IK 0.0 mm / 0.0 deg, lowest p
   stands in the scan frame, or change `robot.grasp`.
 
 None of this changes the cable result: the cable's grip is the same in every case.
+
+### When the scan line (red) stands up, or the hand is on the floor
+
+In the viewer the scan is the thin **red** line. It must hang down from the gripper
+and lie flat on the table. If it stands up (a lying loop seen as a tall vertical
+loop), "up" is wrong: the cable starts on an impossible shape and collapses, the
+gripper end is put near the floor, and the hand goes under the table. Check the
+printed line:
+
+```
+up in the scan frame: (+0.002, -1.000, +0.000)  [auto: nearest axis -y, tilt 0.14 deg, cable climbs 0.2 mm, 97 nodes lying flat]
+```
+
+- `cable climbs` should be a few mm at most (one strand crossing over another is
+  ~2 cable diameters). Tens of mm means no direction makes the cable hang and lie
+  physically: check the tube fit.
+- `nodes lying flat` is the stretch on the table. It is what tells up from down.
+- If `auto` still picks the wrong direction, set `scan.up` yourself, e.g. `"y"`.
+
