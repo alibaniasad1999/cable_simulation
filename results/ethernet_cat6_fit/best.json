@@ -1,0 +1,19 @@
+{
+  "EI_Nm2": 0.0007428480711131751,
+  "rest_curvature_per_m": 14.062,
+  "rest_curl_direction_deg": 187.5,
+  "score_mm": 4.638729329762204,
+  "shape_rms_mm": 4.638729329762204,
+  "shape_hanging_rms_mm": 5.0445152891370295,
+  "shape_lying_rms_mm": 4.315932353374386,
+  "shape_max_mm": 7.8932068837497935,
+  "moved_max_mm": 9.272587125500628,
+  "settled": true,
+  "run": "EI0.0007428_k14.1_p188",
+  "part_scored": "all",
+  "mass_per_length_kg_m": 0.045,
+  "EI_over_weight_m3": 0.001682745658881357,
+  "gravity_bending_length_m": 0.11894316564045339,
+  "runs": 200,
+  "wall_min": 43.0
+}

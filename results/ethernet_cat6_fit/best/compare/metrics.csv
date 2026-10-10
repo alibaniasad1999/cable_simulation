@@ -1,0 +1,2 @@
+run,bend_scale,EI_Nm2,settled,sim_time_s,stretch_percent,shape_mean_mm,shape_rms_mm,shape_p95_mm,shape_max_mm,shape_hanging_rms_mm,shape_lying_rms_mm,arc_rms_mm,arc_max_mm,plug_end_mm,hausdorff_mm,moved_max_mm,touchdown_scan_s_m,touchdown_sim_s_m
+EI0.0007428_k14.1_p188,1.0,0.0007,True,2.5,0.012,4.181,4.6387,6.9111,7.8932,5.0445,4.3159,5.8169,9.3356,0.0348,8.0094,9.2726,0.3034,0.28

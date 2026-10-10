@@ -35,4 +35,5 @@ env/
 *.vrb
 
 # Real captures and new run outputs (large files)
-/results/
+/results/*
+!/results/ethernet_cat6_fit/

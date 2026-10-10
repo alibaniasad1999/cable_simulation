@@ -1,0 +1,13 @@
+start twist (equilibrium for the curl): +30 deg at the plug end (range -40 .. +36 deg)
+[95 segments of 10.0 mm, EI 0.00125 N m^2, 4281 contact pairs, device cuda:0]
+  t =  0.5 s   shape change over 0.5 s: 106.101 mm
+  t =  1.0 s   shape change over 0.5 s:  16.306 mm
+  t =  1.5 s   shape change over 0.5 s:   4.443 mm
+  t =  2.0 s   shape change over 0.5 s:   1.040 mm
+  t =  2.5 s   shape change over 0.5 s:   0.841 mm
+  t =  3.0 s   shape change over 0.5 s:   0.905 mm
+  t =  3.5 s   shape change over 0.5 s:   0.252 mm
+  t =  4.0 s   shape change over 0.5 s:   0.230 mm
+  t =  4.5 s   shape change over 0.5 s:   0.158 mm
+  t =  5.0 s   shape change over 0.5 s:   0.029 mm
+  settled at t = 5.00 s (85.3 s wall), stretch +0.017 %  ->  /home/ali/Documents/me/cable_simulation/results/ethernet_cat6_fit/runs/EI0.00125_k6_p120

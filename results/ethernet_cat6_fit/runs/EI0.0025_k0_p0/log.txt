@@ -1,0 +1,17 @@
+[95 segments of 10.0 mm, EI 0.0025 N m^2, 4281 contact pairs, device cuda:0]
+  t =  0.5 s   shape change over 0.5 s: 290.526 mm
+  t =  1.0 s   shape change over 0.5 s: 234.367 mm
+  t =  1.5 s   shape change over 0.5 s:   5.817 mm
+  t =  2.0 s   shape change over 0.5 s:  30.719 mm
+  t =  2.5 s   shape change over 0.5 s:  13.197 mm
+  t =  3.0 s   shape change over 0.5 s:  10.734 mm
+  t =  3.5 s   shape change over 0.5 s:  14.763 mm
+  t =  4.0 s   shape change over 0.5 s:   5.378 mm
+  t =  4.5 s   shape change over 0.5 s:   4.810 mm
+  t =  5.0 s   shape change over 0.5 s:   7.403 mm
+  t =  5.5 s   shape change over 0.5 s:   3.761 mm
+  t =  6.0 s   shape change over 0.5 s:   1.344 mm
+  t =  6.5 s   shape change over 0.5 s:   3.568 mm
+  t =  7.0 s   shape change over 0.5 s:   2.515 mm
+  t =  7.5 s   shape change over 0.5 s:   0.095 mm
+  settled at t = 7.50 s (126.5 s wall), stretch +0.018 %  ->  /home/ali/Documents/me/cable_simulation/results/ethernet_cat6_fit/runs/EI0.0025_k0_p0

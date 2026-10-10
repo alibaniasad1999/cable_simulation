@@ -1,0 +1,63 @@
+{
+  "name": "ethernet_cat6",
+  "scan": {
+    "centerline_csv": "results/Ethernet_tube_fit/centerline.csv",
+    "summary_json": "results/Ethernet_tube_fit/summary.json",
+    "up": "auto",
+    "gripper_end": "auto",
+    "ground_z_m": null
+  },
+  "cable": {
+    "radius_m": null,
+    "mass_per_length_kg_m": 0.045,
+    "bend_rigidity_EI_Nm2": 0.00074285,
+    "twist_rigidity_GJ_Nm2": 0.00057199,
+    "stretch_rigidity_EA_N": 200.0,
+    "shear_rigidity_kGA_N": 20.0,
+    "bend_damping_time_s": 0.002,
+    "grip_length_m": 0.02,
+    "plug_length_m": 0.036,
+    "plug_mass_kg": 0.004,
+    "rest_curvature_per_m": 14.062,
+    "rest_curl_direction_deg": 187.5,
+    "fix_plug_end": true
+  },
+  "contact": {
+    "ke": 10000.0,
+    "kd": 0.1,
+    "mu": 0.5,
+    "gap_m": 0.005,
+    "self_collision": true
+  },
+  "robot": {
+    "enabled": true,
+    "grasp": "across",
+    "base_xyz_m": null,
+    "base_yaw_deg": null,
+    "base_distance_m": 0.5
+  },
+  "sim": {
+    "init": "scan",
+    "segment_length_m": 0.01,
+    "fps": 60,
+    "substeps": 20,
+    "iterations": 20,
+    "friction_epsilon": 0.0001,
+    "max_time_s": 8.0,
+    "min_time_s": 1.0,
+    "separate_crossings": true,
+    "settle_window_s": 0.5,
+    "settle_tol_m": 0.0001,
+    "device": null
+  },
+  "sweep": {
+    "bend_scale": [
+      0.2,
+      0.5,
+      1.0,
+      2.0,
+      4.0
+    ]
+  },
+  "output_dir": "/home/ali/Documents/me/cable_simulation/results/ethernet_cat6_fit/best_run"
+}
