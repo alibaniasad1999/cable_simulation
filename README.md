@@ -40,6 +40,13 @@ python 03_franka_holds_cable/ethernet_scene.py --config configs/ethernet_cat6.js
 python 04_pointcloud_vs_sim/compare_to_scan.py --config configs/ethernet_cat6.json
 # 4. best match (Ubuntu, lots of cores or a GPU): fit EI + natural curl -> results/ethernet_cat6_fit/best_config.json
 python 04_pointcloud_vs_sim/fit_to_scan.py --config configs/ethernet_cat6.json --workers 16
+# 5. look at the fit: plots, scan points coloured by error (.ply), report.md -> results/ethernet_cat6_fit/result/
+python 04_pointcloud_vs_sim/show_fit_result.py --config configs/ethernet_cat6.json
+# 6. move the arm with the keyboard (arrows, W/S), the fitted cable in the gripper
+python 03_franka_holds_cable/keyboard_teleop.py --config results/ethernet_cat6_fit/best_config.json
+# 7. the same fitted cable in Isaac Sim (PhysX): run the fitted scene once, then with Isaac's Python
+python 03_franka_holds_cable/ethernet_scene.py --config results/ethernet_cat6_fit/best_config.json
+~/isaacsim/python.sh 03_franka_holds_cable/isaac_cable_scene.py --run results/ethernet_cat6_fit/best_run/scan/bend_x1
 ```
 
 **Write it yourself:** [`03_franka_holds_cable/GUIDE.md`](03_franka_holds_cable/GUIDE.md):

@@ -546,3 +546,26 @@ The fit lands on the true values within the pipeline's noise. Before the hidden
 twist was handled (`03_franka_holds_cable/GUIDE.md`, 4g), the exact true values
 scored 28.5 mm and the fit went somewhere else entirely.
 
+### Looking at a finished fit (`show_fit_result.py`)
+
+No simulation is run: it reads what the fit saved.
+
+```bash
+python 04_pointcloud_vs_sim/show_fit_result.py --config configs/ethernet_cat6.json
+python 04_pointcloud_vs_sim/show_fit_result.py --config configs/ethernet_cat6.json --show   # 3-D window, needs open3d
+```
+
+Writes `results/ethernet_cat6_fit/result/`:
+
+| file | content |
+|---|---|
+| `report.md` | every fitted value with its JSON key, unit and meaning, what follows from it (GJ, EI ÷ weight, gravity-bending length, coil radius), what was kept fixed, how well it matches, the 10 best candidates |
+| `compare.png` | three views (scan points, scan centreline, simulation), error along the cable, histogram of scan-point distances |
+| `scan_points_by_error.ply` | the **real scan's cable points** (`cable_points.ply` from the tube fit), coloured by distance to the simulated cable surface: light = close, dark = far (darkest at `--max-mm`, default 10 mm) |
+| `sim_cable.ply` | the simulated cable as a tube of orange points |
+| `compare_cloud.ply` | both together |
+
+The `.ply` files are in the scan's own frame and units: open them in CloudCompare
+next to the original scan. The point distances measure what the scanner actually
+saw, not the tube fit's centreline, so they don't depend on the tube fit.
+
