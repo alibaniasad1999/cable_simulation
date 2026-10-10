@@ -408,3 +408,51 @@ up in the scan frame: (+0.002, -1.000, +0.000)  [auto: nearest axis -y, tilt 0.1
 - `nodes lying flat` is the stretch on the table. It is what tells up from down.
 - If `auto` still picks the wrong direction, set `scan.up` yourself, e.g. `"y"`.
 
+### Moving the arm with the keyboard (`keyboard_teleop.py`)
+
+```bash
+python 03_franka_holds_cable/keyboard_teleop.py --config results/ethernet_cat6_fit/best_config.json
+python 03_franka_holds_cable/keyboard_teleop.py --config results/ethernet_cat6_fit/best_config.json --device cuda:0
+python 03_franka_holds_cable/keyboard_teleop.py --config results/ethernet_cat6_fit/best_config.json --fast
+```
+
+Click into the window, then:
+
+| key | moves the hand |
+|---|---|
+| ← / → | left / right (world y) |
+| ↑ / ↓ | up / down (world z) |
+| W / S | forward / back (world x) |
+| R | back to the start |
+
+The mouse still turns the camera (its keyboard keys are switched off). The hand
+follows by IK, the gripped segments move with it, and the plug end is set free so
+the cable comes along (`--keep-plug-fixed` to hold it). The arm doesn't collide
+with the cable. With the full solver settings a CPU is slower than real time: use a
+GPU, or `--fast` (the cable then bends more easily than the fitted one, fine for
+playing, not for measuring).
+
+### The same cable in Isaac Sim (`isaac_cable_scene.py`)
+
+```bash
+# once, in the Newton environment: a run of the fitted scene (writes init_frames.csv + meta.json)
+python 03_franka_holds_cable/ethernet_scene.py --config results/ethernet_cat6_fit/best_config.json
+# with Isaac Sim's Python
+~/isaacsim/python.sh 03_franka_holds_cable/isaac_cable_scene.py --run results/ethernet_cat6_fit/best_run/scan/bend_x1
+# Newton vs Isaac vs scan, one table and one plot
+python 04_pointcloud_vs_sim/compare_to_scan.py --config configs/ethernet_cat6.json --runs results/ethernet_cat6_fit/best_run/scan
+```
+
+It rebuilds the fitted cable in PhysX from that run folder, with nothing re-fitted:
+- **segments:** one capsule each, same mass per metre;
+- **joints:** D6 joints with translations locked. The twist spring (GJ/h) sits on the cable axis and the bending springs (EI/h) on the other two, converted to N·m per degree as USD wants;
+- **curl:** built into the joint frames, so the springs rest at the coiled shape;
+- **holding:** the grip (and the plug, if it was held) are kinematic;
+- **robot:** Isaac's Franka at the same base pose and joint angles, with robot–cable collisions filtered out.
+
+The result lands in `.../scan/isaac_physx/` in the same format as a Newton run.
+
+Written against the Isaac Sim 6.0 API that `legacy/methods/hang_physx_capsule.py`
+used. It could not be run here: if your version complains (asset path, import
+names), the error says where. `--no-robot` skips the Franka if its asset isn't found.
+

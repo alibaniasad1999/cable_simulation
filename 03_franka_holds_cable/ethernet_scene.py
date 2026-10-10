@@ -46,6 +46,7 @@ import argparse
 import json
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import warp as wp
@@ -432,6 +433,15 @@ def plan_cable(scan, cable_cfg, sim_cfg, init_mode):
     else:  # no tangents in the CSV: average direction over the first / last 2 cm
         t0 = end_tangent(X, at_start=True)
         t1 = end_tangent(X, at_start=False)
+    # The plug continues straight past the last scanned node. If that direction
+    # points down, the plug would sit inside the table (and, when held, push the
+    # cable next to it into the table): lay it flat instead.
+    floor = scan["ground_z"] + scan["radius"]
+    if X[-1, 2] + plug * t1[2] < floor - 1e-4:
+        flat = t1 - np.dot(t1, UP) * UP
+        if np.linalg.norm(flat) > 1e-6:
+            print(f"plug: its direction points {np.degrees(np.arcsin(-t1[2])):.0f} deg into the table; laid flat")
+            t1 = unit(flat)
     grip_start = X[0] - grip * t0
 
     if init_mode == "scan":
@@ -650,7 +660,7 @@ def tcp_target(plan, grasp, flip, toward):
 
 
 def add_franka(builder, base, yaw):
-    xform = wp.transform(wp.vec3(*base), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), yaw))
+    xform = wp.transform(wp.vec3(*[float(v) for v in base]), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), float(yaw)))
     start = builder.body_count
     builder.add_urdf(
         newton.utils.download_asset("franka_emika_panda") / FRANKA_URDF,
@@ -864,6 +874,8 @@ def build_model(cfg, scan, plan, bend_scale, device, placement=None):
         "per_joint_bend_stiffness_Nm_per_rad": EI / h,
         "mass_free_cable_kg": round(float(masses[cable_bodies[plan["n_grip"]:]].sum()), 5),
         "plug_end_fixed": fix_plug,
+        "mass_per_length_kg_m": mu_lin, "plug_mass_kg": cab["plug_mass_kg"],
+        "bend_damping_time_s": tau, "friction_mu": con["mu"], "self_collision": con["self_collision"],
         "ground_z_m": scan["ground_z"], "robot": robot_info,
     }
     return model, cable_bodies, franka_bodies, ground_shape, info, placement
@@ -935,9 +947,9 @@ def contact_pairs(model, cable_bodies, franka_bodies, self_collision, device):
 # =============================================================================
 # 6. Simulate one run
 # =============================================================================
-def run(cfg, scan, bend_scale, out_dir, viewer_kind="null", cache=None):
-    """One simulation. `cache` (a dict) keeps the robot placement between sweep runs:
-    the grip is the same for every stiffness, so the IK search is done once."""
+def setup(cfg, scan, bend_scale=1.0, cache=None):
+    """Build the model and put the cable in its start pose. Used by run() and by
+    keyboard_teleop.py. `cache` (a dict) keeps the robot placement between runs."""
     sim = cfg["sim"]
     device = sim.get("device")
     cache = {} if cache is None else cache
@@ -971,12 +983,26 @@ def run(cfg, scan, bend_scale, out_dir, viewer_kind="null", cache=None):
         bqd = st.body_qd.numpy()
         bqd[cable_bodies] = 0.0
         st.body_qd.assign(bqd)
+    plan["start_p"], plan["start_q"] = p, q
 
     pairs, n_pairs = contact_pairs(model, cable_bodies, franka_bodies, cfg["contact"]["self_collision"], device)
     pipeline = newton.CollisionPipeline(model, broad_phase="explicit", shape_pairs_filtered=pairs)
     contacts = pipeline.contacts()
     solver = SolverVBD(model, iterations=int(sim["iterations"]), friction_epsilon=float(sim["friction_epsilon"]),
                        rigid_compliant_alm=True, rigid_contact_history=False)
+    return SimpleNamespace(model=model, device=device, state_0=state_0, state_1=state_1, control=control,
+                           pipeline=pipeline, contacts=contacts, solver=solver, cable_bodies=cable_bodies,
+                           franka_bodies=franka_bodies, plan=plan, info=info, n_pairs=n_pairs)
+
+
+def run(cfg, scan, bend_scale, out_dir, viewer_kind="null", cache=None):
+    """One simulation until the cable settles; writes the outputs to out_dir."""
+    sim = cfg["sim"]
+    S = setup(cfg, scan, bend_scale, cache)
+    model, device, control = S.model, S.device, S.control
+    state_0, state_1 = S.state_0, S.state_1
+    pipeline, contacts, solver = S.pipeline, S.contacts, S.solver
+    cable_bodies, plan, info, n_pairs = S.cable_bodies, S.plan, S.info, S.n_pairs
 
     viewer = None
     if viewer_kind == "gl":
@@ -1076,6 +1102,9 @@ def write_run(out_dir, plan, nodes, info, scan):
                header=header, comments="", fmt=["%.6f"] * 4 + ["%d"])
     np.savetxt(out_dir / "init_centerline.csv", np.column_stack([plan["s"], plan["nodes"], part]), delimiter=",",
                header=header, comments="", fmt=["%.6f"] * 4 + ["%d"])
+    if "start_q" in plan:  # start pose of every segment (centre + frame, twist included): for other engines
+        np.savetxt(out_dir / "init_frames.csv", np.column_stack([plan["start_p"], plan["start_q"]]), delimiter=",",
+                   header="px,py,pz,qx,qy,qz,qw", comments="", fmt="%.9f")
     info["columns_note"] = note
     with open(out_dir / "meta.json", "w") as f:
         json.dump(info, f, indent=2, default=float)

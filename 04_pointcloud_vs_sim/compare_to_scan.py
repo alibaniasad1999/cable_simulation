@@ -324,16 +324,17 @@ def main():
         row["run"] = d.name
         rows.append(row)
         per_node_list.append(pn)
-        runs.append((f"EI {meta['EI_Nm2']:.2g} N m²", sim_s, None, sim_X, init_X))
+        runs.append((meta.get("label") or f"EI {meta['EI_Nm2']:.2g} N m²", sim_s, None, sim_X, init_X))
 
     out = root / "compare"
     out.mkdir(exist_ok=True)
     print(write_metrics(out, rows))
     plot_overlay(out / "overlay.png", scan_X, runs, ground)
     plot_errors(out / "errors.png", runs, per_node_list)
-    if len(rows) > 1:
+    sweep = len({r["EI_Nm2"] for r in rows}) > 1  # a stiffness sweep, not e.g. Newton vs Isaac
+    if sweep:
         plot_sweep(out / "sweep.png", rows)
-    print(f"\nwrote {out}/ (metrics.csv, summary.md, overlay.png, errors.png{', sweep.png' if len(rows) > 1 else ''})")
+    print(f"\nwrote {out}/ (metrics.csv, summary.md, overlay.png, errors.png{', sweep.png' if sweep else ''})")
 
 
 if __name__ == "__main__":
