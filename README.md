@@ -1,9 +1,11 @@
 # Cable simulation with a Franka robot — study guide
 
-Personal study notes for rebuilding this project from scratch. They aren't a
-software README. Each part tells you **which Newton calls to use, what every
-argument means and how to choose its value**, with tasks and checks. Newton
-handles the physics and math. These notes are about using it correctly.
+A self-directed curriculum for simulating a Franka robot holding a cable in
+Newton, built by reconstructing a reference example from first principles
+rather than reading it passively. Each part documents **which Newton calls to
+use, what every argument means and how to choose its value**, with tasks and
+self-checks. Newton handles the physics and math; these notes are about using
+it correctly.
 
 **Main goal:** understand and rebuild the reference example
 [`reference/example_franka_cable_ik_pick_place.py`](reference/example_franka_cable_ik_pick_place.py)
@@ -24,14 +26,14 @@ several solvers) is in [`legacy/`](legacy/), kept for reference.
 | 2 | [`02_cable/`](02_cable/README.md) | a cable: size, segments, mass, elasticity | `Rod.create_straight`, `add_rod`, `ShapeConfig`, choosing `radius` / `segment_count` / `density` / `stretch_stiffness` / `bend_stiffness` / damping, `SolverVBD`, fixing and moving an end, reading the shape back |
 | 3 | [`03_franka_holds_cable/`](03_franka_holds_cable/README.md) | the gripper holds the cable | kinematic attachment (Option K), `SolverCoupledProxy` (Option C, the example), split collision pipelines, gripper tuning, multiple worlds |
 | 4 | [`04_pointcloud_vs_sim/`](04_pointcloud_vs_sim/README.md) | real `.ply` vs simulation | PLY format, units & frames, aligning via the gripper, cable extraction, centreline, metrics, error budget, identifying `bend_stiffness` |
-| side quest | [`05_side_quest_joystick_mac/`](05_side_quest_joystick_mac/README.md) | drive the Franka with a gamepad on macOS | replaces the example's keyframe function |
+| 5 (optional) | [`05_joystick_teleop/`](05_joystick_teleop/README.md) | drive the Franka with a gamepad on macOS | replaces the example's keyframe function |
 
 **Working now — the Ethernet cable vs its scan.** `configs/ethernet_cat6.json`
 holds every number; two scripts do the rest:
 
 ```bash
 # 1. scan -> centreline (once):          results/Ethernet_tube_fit/
-python 04_pointcloud_vs_sim/tube_fit/fit_cable_tube.py Data/Ethernet.ply
+python 04_pointcloud_vs_sim/tube_fit/fit_cable_tube.py data/Ethernet.ply
 # 2a. check the simulated cable bends like its EI (must print OK)
 python 03_franka_holds_cable/check_stiffness.py --config configs/ethernet_cat6.json
 # 2b. Franka + cable from the JSON, settle, export (add --viewer gl to watch, --sweep for all EI values)

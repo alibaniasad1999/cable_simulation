@@ -2,7 +2,7 @@
 
 > Study notes for writing your own version of `fit_cable_tube.py`.
 > Each stage gives the idea, the maths, the library calls to look up, and the
-> numbers you should get on `Data/Ethernet.ply` so you can check yourself.
+> numbers you should get on `data/Ethernet.ply` so you can check yourself.
 > The finished script is in this folder. Look at it only when stuck.
 
 **Input:** a `.ply` with points, normals and (optionally) colours.

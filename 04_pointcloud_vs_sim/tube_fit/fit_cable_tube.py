@@ -1,6 +1,6 @@
 """Fit a tube (smooth 3-D curve + constant radius) to a cable in a point cloud.
 
-    python fit_cable_tube.py ../../Data/Ethernet.ply
+    python fit_cable_tube.py ../../data/Ethernet.ply
 
 Steps: local tube detection from the normals -> radius -> march along the cable
 -> B-spline tube fit on the raw surface points -> trim -> write results.

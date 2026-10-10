@@ -6,7 +6,7 @@ else. This is the "fit a tube" method from Part 4 §7.
 
 ```bash
 # from the repository root
-.env/bin/python3 04_pointcloud_vs_sim/tube_fit/fit_cable_tube.py Data/Ethernet.ply
+.env/bin/python3 04_pointcloud_vs_sim/tube_fit/fit_cable_tube.py data/Ethernet.ply
 ```
 
 No clicking is needed: the longest thin tube in the scan is taken as the cable.
@@ -48,7 +48,7 @@ Written to `results/<name>_tube_fit/`:
 Load the scan, `cable_points.ply` and `centerline.ply` together in CloudCompare
 to inspect the result.
 
-## Result on `Data/Ethernet.ply`
+## Result on `data/Ethernet.ply`
 
 | | |
 |---|---|

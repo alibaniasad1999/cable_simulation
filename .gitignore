@@ -37,3 +37,6 @@ env/
 # Real captures and new run outputs (large files)
 /results/*
 !/results/ethernet_cat6_fit/
+# ...but not the raw per-candidate grid search (regenerate with fit_to_scan.py);
+# only its summary (evaluations.csv, best.json, best_config.json, best/, best_run/) is kept.
+/results/ethernet_cat6_fit/runs/

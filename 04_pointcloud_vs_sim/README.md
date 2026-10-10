@@ -1,6 +1,6 @@
 # Part 4 — Real cable point cloud (.ply) vs simulation
 
-> Study notes. Prerequisites: Part 2 (cable with chosen size/segments/stiffness)
+> **Prerequisites:** Part 2 (cable with chosen size/segments/stiffness)
 > and Part 3 (cable held by the gripper, Option K).
 >
 > **The question of this part:** you have a `.ply` point cloud of a real cable

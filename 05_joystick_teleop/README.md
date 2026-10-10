@@ -1,7 +1,7 @@
-# Side quest — Driving the Franka with a joystick on macOS
+# Part 5 (optional) — Driving the Franka with a joystick on macOS
 
 > **Optional.** Not needed for the main goal (Parts 1–4). Do it when Parts 1–3
-> work, for fun or to pose the simulated robot by hand.
+> work, to pose the simulated robot by hand or drive it live.
 > Prerequisite: Part 1 (IK moves the hand to a target).
 
 ## Where it plugs into the reference example

@@ -213,7 +213,7 @@ def load_scan(cfg):
         raise SystemExit(
             f"scan centreline not found: {csv}\n"
             "Run the tube fit first, e.g.\n"
-            "  python 04_pointcloud_vs_sim/tube_fit/fit_cable_tube.py Data/Ethernet.ply"
+            "  python 04_pointcloud_vs_sim/tube_fit/fit_cable_tube.py data/Ethernet.ply"
         )
     data = np.genfromtxt(csv, delimiter=",", names=True)
     X = np.column_stack([data["x_m"], data["y_m"], data["z_m"]])
