@@ -435,24 +435,38 @@ playing, not for measuring).
 ### The same cable in Isaac Sim (`isaac_cable_scene.py`)
 
 ```bash
-# once, in the Newton environment: a run of the fitted scene (writes init_frames.csv + meta.json)
-python 03_franka_holds_cable/ethernet_scene.py --config results/ethernet_cat6_fit/best_config.json
 # with Isaac Sim's Python
-~/isaacsim/python.sh 03_franka_holds_cable/isaac_cable_scene.py --run results/ethernet_cat6_fit/best_run/scan/bend_x1
-# Newton vs Isaac vs scan, one table and one plot
-python 04_pointcloud_vs_sim/compare_to_scan.py --config configs/ethernet_cat6.json --runs results/ethernet_cat6_fit/best_run/scan
+~/isaacsim/python.sh 03_franka_holds_cable/isaac_cable_scene.py --config results/ethernet_cat6_fit/best_config.json
 ```
 
-It rebuilds the fitted cable in PhysX from that run folder, with nothing re-fitted:
-- **segments:** one capsule each, same mass per metre;
-- **joints:** D6 joints with translations locked. The twist spring (GJ/h) sits on the cable axis and the bending springs (EI/h) on the other two, converted to N·m per degree as USD wants;
-- **curl:** built into the joint frames, so the springs rest at the coiled shape;
-- **holding:** the grip (and the plug, if it was held) are kinematic;
-- **robot:** Isaac's Franka at the same base pose and joint angles, with robot–cable collisions filtered out.
+**Newton solves the cable; Isaac Sim only draws it**, the same idea as
+`legacy/methods/hang_newton_cable.py --gui`. It is the scene of `ethernet_scene.py`
+(its `setup()`, `SolverVBD`), not Isaac Sim's own Newton engine, which does not
+support cables. Newton runs in one of two places (`--newton`, default `auto`):
 
-The result lands in `.../scan/isaac_physx/` in the same format as a Newton run.
+- **`here`:** inside the Isaac Sim process, as the legacy script did. This needs a
+  Newton that can run `ethernet_scene.py` (`newton.Rod`, Newton 1.6) importable
+  from Isaac Sim's Python.
+- **`worker`:** in a second process under your own Newton Python, which sends the
+  segment poses to the window after every frame. `auto` falls back to this when
+  Isaac Sim's Newton is too old (Isaac Sim 6.0 bundles 1.2). The worker's Python is
+  `--newton-python`, else `$NEWTON_PYTHON`, else the repository's `.env` / `.venv`,
+  else `python3`.
 
-Written against the Isaac Sim 6.0 API that `legacy/methods/hang_physx_capsule.py`
-used. It could not be run here: if your version complains (asset path, import
-names), the error says where. `--no-robot` skips the Franka if its asset isn't found.
+Both give the same frames (checked: identical poses).
+
+What is in the Isaac stage:
+- **cable:** one capsule per segment at its real radius, with no physics on it. Each frame it is moved to the pose Newton computed, twist included;
+- **scan:** the scanned centreline as a red line, as in the Newton GL viewer;
+- **robot:** the Franka of the Newton scene (kinematic, placed by IK), drawn with Isaac's `franka.usd`: each link is put at the pose Newton holds it in. `--no-robot` leaves it out.
+
+No physics engine runs in Isaac Sim at all (no PhysX, and not Isaac's own Newton
+engine): the stage is only a picture of the Newton state.
+
+Nothing is written: the run folder and the comparison with the scan come from
+`ethernet_scene.py` and `compare_to_scan.py`, as before.
+
+The Newton worker and the stream were tested without Isaac Sim. The Isaac side
+follows the Isaac Sim 6.0 API used by `legacy/methods/cable_view.py` and could not
+be run here: if your version complains (asset path, import names), the error says where.
 
